@@ -579,7 +579,7 @@ func checkExamples(dir string) ExampleCheckResult {
 		result.Detail = fmt.Sprintf("could not build CLI binary: %v", err)
 		return result
 	}
-	defer os.Remove(binaryPath)
+	defer func() { _ = os.Remove(binaryPath) }()
 
 	// Get global flags from root --help
 	globalOut, err := runDogfoodCmd(binaryPath, 15*time.Second, "--help")

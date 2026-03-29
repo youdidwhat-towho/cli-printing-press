@@ -33,7 +33,7 @@ func newScorecardCmd() *cobra.Command {
 			if err != nil {
 				return fmt.Errorf("creating temp dir: %w", err)
 			}
-			defer os.RemoveAll(pipelineDir)
+			defer func() { _ = os.RemoveAll(pipelineDir) }()
 
 			sc, err := pipeline.RunScorecard(dir, pipelineDir, specPath, nil)
 			if err != nil {

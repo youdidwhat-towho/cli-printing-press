@@ -376,7 +376,7 @@ func runDataPipelineTest(binary, mode string, envFn func() []string) bool {
 	if err != nil {
 		return false
 	}
-	defer os.RemoveAll(tmpDir)
+	defer func() { _ = os.RemoveAll(tmpDir) }()
 
 	dbPath := filepath.Join(tmpDir, "test.db")
 	env = append(env, "HOME="+tmpDir) // so sync uses temp location

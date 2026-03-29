@@ -22,9 +22,6 @@ linters:
         - fmt.Fprintln
         - fmt.Fprint
         - (io.Writer).Write
-        # Defer cleanup — failure is harmless, no recovery action.
-        - os.Remove
-        - os.RemoveAll
   exclusions:
     paths:
       - library

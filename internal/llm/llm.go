@@ -25,7 +25,7 @@ func Run(prompt string) (string, error) {
 	if err := os.WriteFile(tmpFile, []byte(prompt), 0644); err != nil {
 		return "", fmt.Errorf("writing prompt: %w", err)
 	}
-	defer os.Remove(tmpFile)
+	defer func() { _ = os.Remove(tmpFile) }()
 
 	// Try claude first (-p / --print mode, prompt as positional arg)
 	if path, err := exec.LookPath("claude"); err == nil {
