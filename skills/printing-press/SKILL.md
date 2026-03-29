@@ -878,7 +878,7 @@ Write:
 
 ## Phase 6: Publish
 
-After the final phase completes (Phase 4 if no live smoke, Phase 5 if it ran), offer to publish the CLI to the library repo.
+After the final phase completes (Phase 4 if no live smoke, Phase 5 if it ran), archive the run artifacts and offer to publish the CLI to the library repo.
 
 ### Gate
 
@@ -887,6 +887,16 @@ Use the most recent shipcheck verdict:
 - otherwise use the Phase 4 verdict
 
 Skip this phase entirely if the final shipcheck verdict is `hold`. Only proceed for `ship` or `ship-with-gaps`.
+
+### Archive manuscripts
+
+The run's research and proofs are in `$API_RUN_DIR/` (runstate). The `publish package` command looks for them at `$PRESS_MANUSCRIPTS/<api>/<run-id>/`. Archive them now so they're available whether the user publishes immediately or later.
+
+```bash
+mkdir -p "$PRESS_MANUSCRIPTS/<api>/$RUN_ID"
+cp -r "$RESEARCH_DIR" "$PRESS_MANUSCRIPTS/<api>/$RUN_ID/research" 2>/dev/null || true
+cp -r "$PROOFS_DIR" "$PRESS_MANUSCRIPTS/<api>/$RUN_ID/proofs" 2>/dev/null || true
+```
 
 ### Check for existing PR
 
