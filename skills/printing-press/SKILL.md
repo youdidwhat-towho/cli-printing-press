@@ -206,7 +206,17 @@ Before new research:
    - `$PRESS_MANUSCRIPTS/<api>/*/research/*`
    - `$REPO_ROOT/docs/plans/*<api>*` (legacy fallback)
 3. Reuse good prior work instead of redoing it.
-4. **API Key Gate (MANDATORY STOP)** — Check for an API key and get explicit user consent before proceeding to Phase 1.
+4. **API Key Gate** — Check whether this API requires authentication, then handle accordingly.
+
+**First, determine if the API needs auth.** Use these signals:
+- The spec has no `security` or `securityDefinitions` section → likely no auth needed
+- The API is known to be public/unauthenticated (e.g., ESPN, weather APIs, public data APIs)
+- No env var matching the API name exists AND no known token pattern applies
+- Community docs or npm/PyPI wrappers describe the API as "no auth required"
+
+**If the API does NOT require auth** (public/unauthenticated), skip the key gate entirely. Proceed silently — do not ask the user about API keys for a public API. Live smoke testing in Phase 5 will work without a key.
+
+**If the API DOES require auth**, run the key gate:
 
 Token detection order:
 - GitHub: `GITHUB_TOKEN`, `GH_TOKEN`, or `gh auth token`
@@ -230,7 +240,7 @@ Token detection order:
 - If the user provides a key → proceed with the key available for Phase 5.
 - If the user declines → proceed without the key and display: "Live smoke testing (Phase 5) will be skipped. The CLI will still be generated and verified against mock responses."
 
-Always resolve the API key gate before moving to Phase 1.
+Resolve the API key gate (or skip it for public APIs) before moving to Phase 1.
 
 ## Phase 1: Research Brief
 
