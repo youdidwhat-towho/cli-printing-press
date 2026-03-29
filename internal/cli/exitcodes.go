@@ -7,6 +7,7 @@ const (
 	ExitSpecError       = 2
 	ExitGenerationError = 3
 	ExitUnknownError    = 4
+	ExitPublishError    = 5
 )
 
 // ExitError wraps an error with a specific exit code.
