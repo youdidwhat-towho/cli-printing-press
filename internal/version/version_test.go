@@ -9,7 +9,7 @@ import (
 
 func TestVersionIsValidSemver(t *testing.T) {
 	assert.NotEmpty(t, Version)
-	assert.Regexp(t, regexp.MustCompile(`^\d+\.\d+\.\d+`), Version)
+	assert.Regexp(t, regexp.MustCompile(`^\d+\.\d+\.\d+$`), Version)
 }
 
 func TestGetReturnsVersion(t *testing.T) {
