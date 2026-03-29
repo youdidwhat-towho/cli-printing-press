@@ -320,17 +320,20 @@ Suggested shape:
 3. ...
 ```
 
-## Phase 1.7: Sniff Gate (Optional)
+## Phase 1.7: Sniff Gate
 
 After Phase 1 research, evaluate whether sniffing the live site would improve the spec. Skip this gate entirely if the user already passed `--har` or `--spec` (spec source is already resolved).
+
+**IMPORTANT:** When the decision matrix below says "Offer sniff", you MUST ask the user via `AskUserQuestion`. Do NOT silently decide to skip sniff because the docs look thorough — the user should make that call. The only case where you skip silently is "spec appears complete" (no gap detected).
 
 ### When to offer sniff
 
 | Spec found? | Research shows gaps? | Auth required? | Action |
 |-------------|---------------------|----------------|--------|
-| Yes | Yes — docs or competitors show significantly more endpoints than the spec | No | **Offer sniff as enrichment** |
+| Yes | Yes — docs or competitors show significantly more endpoints than the spec | No | **MUST offer sniff as enrichment** |
 | Yes | No — spec appears complete | Any | Skip silently |
-| No | N/A | No | **Offer sniff as primary discovery** |
+| No | Community docs exist (e.g., Public-ESPN-API) | No | **MUST offer sniff OR --docs** — present both options so the user decides |
+| No | No docs found either | No | **MUST offer sniff as primary discovery** |
 | No | N/A | Yes (login required) | Skip — fall back to `--docs` |
 
 **Gap detection heuristic:** If Phase 1 research found documentation, competitor tools, or community projects that reference significantly more endpoints or features than the resolved spec covers, that's a gap signal. Example: "The Zuplo OpenAPI spec has 42 endpoints, but the Public-ESPN-API docs describe 370+."
@@ -576,11 +579,17 @@ Write to `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`
 
 ### Phase Gate 1.5
 
-**STOP.** Present the absorb manifest to the user:
+**STOP.** Present the absorb manifest to the user via `AskUserQuestion`:
 
-"Found [N] features across [X] tools (MCPs, skills, CLIs, scripts). Our CLI will absorb all [N] and add [M] transcendence features. Total: [N+M] features. This is [Z]% more than the best existing tool. Approve to proceed to generation."
+"Found [N] features across [X] tools (MCPs, skills, CLIs, scripts). Our CLI will absorb all [N] and add [M] transcendence features. Total: [N+M] features. This is [Z]% more than the best existing tool."
 
-Use AskUserQuestion. WAIT for approval. Do NOT generate until approved.
+Options:
+1. **Approve — generate now** — Start CLI generation with the full manifest
+2. **Add features first** — You have specific features or ideas you want added to the manifest before building
+3. **Review the research** — Show me the full brief and manifest before deciding
+4. **Trim scope** — The feature count is too ambitious, let's focus on a subset
+
+WAIT for approval. Do NOT generate until approved.
 
 ---
 
