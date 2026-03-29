@@ -2,6 +2,7 @@ package catalog
 
 import (
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -68,9 +69,15 @@ func ParseEntry(data []byte) (*Entry, error) {
 }
 
 func ParseDir(dir string) ([]Entry, error) {
-	dirEntries, err := os.ReadDir(dir)
+	return ParseFS(os.DirFS(dir))
+}
+
+// ParseFS reads all YAML catalog entries from an fs.FS (e.g., an embedded filesystem).
+// It mirrors ParseDir but operates on the fs.FS interface instead of the OS filesystem.
+func ParseFS(fsys fs.FS) ([]Entry, error) {
+	dirEntries, err := fs.ReadDir(fsys, ".")
 	if err != nil {
-		return nil, fmt.Errorf("reading directory: %w", err)
+		return nil, fmt.Errorf("reading fs: %w", err)
 	}
 
 	sort.Slice(dirEntries, func(i, j int) bool {
@@ -86,8 +93,7 @@ func ParseDir(dir string) ([]Entry, error) {
 			continue
 		}
 
-		path := filepath.Join(dir, de.Name())
-		data, err := os.ReadFile(path)
+		data, err := fs.ReadFile(fsys, de.Name())
 		if err != nil {
 			return nil, fmt.Errorf("reading %s: %w", de.Name(), err)
 		}
@@ -100,6 +106,16 @@ func ParseDir(dir string) ([]Entry, error) {
 	}
 
 	return entries, nil
+}
+
+// LookupFS finds a single catalog entry by name from an fs.FS.
+// Returns an error if the entry is not found.
+func LookupFS(fsys fs.FS, name string) (*Entry, error) {
+	data, err := fs.ReadFile(fsys, name+".yaml")
+	if err != nil {
+		return nil, fmt.Errorf("catalog entry %q not found", name)
+	}
+	return ParseEntry(data)
 }
 
 func (e *Entry) Validate() error {

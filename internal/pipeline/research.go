@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/catalog"
 	"github.com/mvanhorn/cli-printing-press/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/internal/llm"
 )
@@ -63,14 +64,14 @@ type Alternative struct {
 // RunResearch executes the research phase for an API.
 // It checks the catalog for known alternatives, then optionally
 // queries the GitHub API for additional CLI tools.
-func RunResearch(apiName, catalogDir, pipelineDir string) (*ResearchResult, error) {
+func RunResearch(apiName, pipelineDir string) (*ResearchResult, error) {
 	result := &ResearchResult{
 		APIName:      apiName,
 		ResearchedAt: time.Now(),
 	}
 
 	// Step 1: Check catalog for known alternatives
-	catalogAlts := loadCatalogAlternatives(apiName, catalogDir)
+	catalogAlts := loadCatalogAlternatives(apiName)
 	for _, alt := range catalogAlts {
 		result.Alternatives = append(result.Alternatives, Alternative{
 			Name:     alt.Name,
@@ -167,16 +168,8 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 	return &r, nil
 }
 
-func loadCatalogAlternatives(apiName, catalogDir string) []catalog.KnownAlt {
-	if catalogDir == "" {
-		catalogDir = "catalog"
-	}
-	path := filepath.Join(catalogDir, apiName+".yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil
-	}
-	entry, err := catalog.ParseEntry(data)
+func loadCatalogAlternatives(apiName string) []catalog.KnownAlt {
+	entry, err := catalog.LookupFS(catalogfs.FS, apiName)
 	if err != nil {
 		return nil
 	}

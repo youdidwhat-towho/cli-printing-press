@@ -2,6 +2,7 @@
 name: printing-press
 description: Generate a ship-ready CLI for an API with a lean research -> generate -> build -> shipcheck loop.
 version: 2.0.0
+min-binary-version: "0.2.0"
 allowed-tools:
   - Bash
   - Read
@@ -77,7 +78,7 @@ If the arguments start with `emboss`, this is a second-pass improvement cycle fo
 Use the built-in audit command:
 
 ```bash
-cd "$REPO_ROOT" && ./printing-press emboss --dir <cli-dir> --spec <spec-path> --audit-only
+printing-press emboss --dir <cli-dir> --spec <spec-path> --audit-only
 ```
 
 Emboss is:
@@ -107,15 +108,28 @@ Before doing anything else:
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
+# min-binary-version: 0.2.0
+if ! command -v printing-press >/dev/null 2>&1; then
+  if [ -x "$HOME/go/bin/printing-press" ]; then
+    echo "printing-press found at ~/go/bin/printing-press but not on PATH."
+    echo "Add GOPATH/bin to your PATH:  export PATH=\"\$HOME/go/bin:\$PATH\""
+  else
+    echo "printing-press binary not found."
+    echo "Install with:  go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest"
+  fi
+  return 1 2>/dev/null || exit 1
+fi
 
-PRESS_BASE="$(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
+# Derive scope: prefer git repo root, fall back to CWD
+_scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+_scope_dir="$(cd "$_scope_dir" && pwd -P)"
+
+PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
   PRESS_BASE="workspace"
 fi
 
-PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$REPO_ROOT" | shasum -a 256 | cut -c1-8)"
+PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
 PRESS_HOME="$HOME/printing-press"
 PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
 PRESS_LIBRARY="$PRESS_HOME/library"
@@ -125,6 +139,8 @@ PRESS_CURRENT="$PRESS_RUNSTATE/current"
 mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY" "$PRESS_MANUSCRIPTS" "$PRESS_CURRENT"
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
+
+After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
 
 After you know `<api>`, initialize the run-scoped artifact paths:
 
@@ -206,6 +222,20 @@ Token detection order:
 Always resolve the API key gate before moving to Phase 1.
 
 ## Phase 1: Research Brief
+
+Before starting research, check if the API has a built-in catalog entry:
+
+```bash
+printing-press catalog show <api> --json 2>/dev/null
+```
+
+If the catalog has an entry for this API, present the user with a choice:
+
+> "<API> is in the built-in catalog (spec: <spec_url>). Use the catalog config to skip discovery, or run full discovery?"
+
+- If catalog config: use the spec_url from the catalog entry, skip the research/discovery phase
+- If full discovery: proceed with the normal research workflow
+- If the catalog doesn't have this API: proceed normally without mentioning the catalog
 
 Write one build-driving brief, not a stack of phase essays.
 
@@ -340,7 +370,7 @@ Use the resolved spec source and generate immediately.
 OpenAPI / internal YAML:
 
 ```bash
-cd "$REPO_ROOT" && ./printing-press generate \
+printing-press generate \
   --spec <spec-path-or-url> \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
   --force --lenient --validate
@@ -349,7 +379,7 @@ cd "$REPO_ROOT" && ./printing-press generate \
 Docs-only:
 
 ```bash
-cd "$REPO_ROOT" && ./printing-press generate \
+printing-press generate \
   --docs <docs-url> \
   --name <api> \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
@@ -435,10 +465,9 @@ Include:
 Run one combined verification block.
 
 ```bash
-cd "$REPO_ROOT"
-./printing-press dogfood   --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec>
-./printing-press verify    --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec> --fix
-./printing-press scorecard --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec>
+printing-press dogfood   --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec>
+printing-press verify    --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec> --fix
+printing-press scorecard --dir "$PRESS_LIBRARY/<api>-pp-cli" --spec <same-spec>
 ```
 
 Interpretation:
@@ -493,7 +522,7 @@ Write:
 
 ### When to use `printing-press print`
 
-Use `./printing-press print <api>` only when the user explicitly wants a resumable on-disk pipeline with phase seeds. It is optional.
+Use `printing-press print <api>` only when the user explicitly wants a resumable on-disk pipeline with phase seeds. It is optional.
 
 The fast path for `/printing-press <API>` is:
 - brief

@@ -2,7 +2,9 @@ package catalog
 
 import (
 	"testing"
+	"testing/fstest"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/catalog"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -136,4 +138,45 @@ func TestParseDir(t *testing.T) {
 
 	assert.Contains(t, names, "test-api")
 	assert.Contains(t, names, "petstore")
+}
+
+func TestParseFSEmbeddedCatalog(t *testing.T) {
+	entries, err := ParseFS(catalogfs.FS)
+	require.NoError(t, err)
+	assert.Greater(t, len(entries), 0)
+}
+
+func TestLookupFSFindsStripe(t *testing.T) {
+	entry, err := LookupFS(catalogfs.FS, "stripe")
+	require.NoError(t, err)
+	assert.Equal(t, "stripe", entry.Name)
+	assert.Equal(t, "https://raw.githubusercontent.com/stripe/openapi/master/openapi/spec3.json", entry.SpecURL)
+}
+
+func TestLookupFSNotFound(t *testing.T) {
+	_, err := LookupFS(catalogfs.FS, "nonexistent-api")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), `catalog entry "nonexistent-api" not found`)
+}
+
+func TestParseFSEmptyFS(t *testing.T) {
+	emptyFS := fstest.MapFS{}
+	entries, err := ParseFS(emptyFS)
+	require.NoError(t, err)
+	assert.Empty(t, entries)
+}
+
+func TestCatalogFSContainsYAMLFiles(t *testing.T) {
+	// Integration: verify the embedded FS from the catalog package is importable
+	// and contains YAML files.
+	entries, err := catalogfs.FS.ReadDir(".")
+	require.NoError(t, err)
+
+	var yamlCount int
+	for _, e := range entries {
+		if !e.IsDir() && len(e.Name()) > 5 && e.Name()[len(e.Name())-5:] == ".yaml" {
+			yamlCount++
+		}
+	}
+	assert.Greater(t, yamlCount, 0)
 }

@@ -9,6 +9,8 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"runtime"
+	"runtime/debug"
 	"strings"
 	"time"
 
@@ -26,6 +28,24 @@ import (
 )
 
 var version = "0.4.0" // x-release-please-version
+
+func init() {
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	v := info.Main.Version
+	// Only use the build info version when it's a real tagged release.
+	// Skip empty, "(devel)", and pseudo-versions like "v0.0.0-20260328...".
+	if v == "" || v == "(devel)" {
+		return
+	}
+	trimmed := strings.TrimPrefix(v, "v")
+	if strings.HasPrefix(trimmed, "0.0.0-") {
+		return
+	}
+	version = trimmed
+}
 
 func Execute() error {
 	rootCmd := &cobra.Command{
@@ -45,6 +65,7 @@ func Execute() error {
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
+	rootCmd.AddCommand(newCatalogCmd())
 
 	return rootCmd.Execute()
 }
@@ -441,14 +462,27 @@ func fetchOrCacheSpec(specURL string, refresh bool, skipCache bool) ([]byte, err
 }
 
 func newVersionCmd() *cobra.Command {
-	return &cobra.Command{
+	var asJSON bool
+
+	cmd := &cobra.Command{
 		Use:     "version",
 		Short:   "Print version",
 		Example: `  printing-press version`,
-		Run: func(cmd *cobra.Command, args []string) {
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if asJSON {
+				return json.NewEncoder(os.Stdout).Encode(map[string]string{
+					"version": version,
+					"go":      runtime.Version(),
+				})
+			}
 			fmt.Printf("printing-press %s\n", version)
+			return nil
 		},
 	}
+
+	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+
+	return cmd
 }
 
 func newPrintCmd() *cobra.Command {

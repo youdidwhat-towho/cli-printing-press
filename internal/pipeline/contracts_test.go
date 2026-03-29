@@ -58,12 +58,26 @@ func TestSkillSetupBlocksMatchWorkspaceContract(t *testing.T) {
 			full := readContractFile(t, tt.path)
 			block := extractContractBlock(t, full)
 
-			assert.Contains(t, block, `REPO_ROOT="$(git rev-parse --show-toplevel)"`)
-			assert.Contains(t, block, `PRESS_BASE="$(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"`)
-			assert.Contains(t, block, `PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$REPO_ROOT" | shasum -a 256 | cut -c1-8)"`)
+			// Binary on PATH check
+			assert.Contains(t, block, `command -v printing-press`)
+			// Version comment for frontmatter parity
+			assert.Contains(t, block, `# min-binary-version:`)
+			// Symlink-safe canonicalization
+			assert.Contains(t, block, `pwd -P`)
+
+			// Core workspace variables
 			assert.Contains(t, block, `PRESS_HOME="$HOME/printing-press"`)
+			assert.Contains(t, block, `PRESS_SCOPE=`)
 			assert.Contains(t, block, `PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"`)
 			assert.Contains(t, block, `PRESS_LIBRARY="$PRESS_HOME/library"`)
+
+			// Must NOT reference repo-local binary or build
+			assert.NotContains(t, block, `./printing-press`)
+			assert.NotContains(t, block, `go build`)
+			// Must NOT contain REPO_ROOT or cd to repo
+			assert.NotContains(t, block, `REPO_ROOT`)
+			assert.NotContains(t, block, `cd "$REPO_ROOT"`)
+
 			assert.NotContains(t, full, "~/cli-printing-press")
 
 			if tt.expectsManuscripts {

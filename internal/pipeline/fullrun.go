@@ -113,7 +113,7 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 	}
 
 	// Step 1: Research
-	research, err := RunResearch(apiName, "catalog", researchDir)
+	research, err := RunResearch(apiName, researchDir)
 	if err != nil {
 		result.ResearchError = err.Error()
 		result.Errors = append(result.Errors, fmt.Sprintf("research: %v", err))

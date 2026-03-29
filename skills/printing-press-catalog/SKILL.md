@@ -2,6 +2,8 @@
 name: printing-press-catalog
 description: Browse and install pre-built Go CLIs for popular APIs from the catalog
 version: 0.4.0
+min-binary-version: "0.2.0"
+deprecated: true
 allowed-tools:
   - Bash
   - Read
@@ -13,6 +15,8 @@ allowed-tools:
 ---
 
 # /printing-press-catalog
+
+> **Deprecated:** This skill is superseded by the main `/printing-press` skill, which now checks the built-in catalog automatically. Use `/printing-press <API>` instead. For browsing the catalog, use `printing-press catalog list` in your terminal.
 
 Browse and install pre-built Go CLIs for popular APIs.
 
@@ -27,22 +31,36 @@ Browse and install pre-built Go CLIs for popular APIs.
 ## Prerequisites
 
 - Go 1.21+ installed
-- Running from inside the cli-printing-press repo (or a worktree of it)
+- `printing-press` binary on PATH (install with `go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest`)
 
 ## Setup
 
-Before any other commands, resolve and cd to the repo root. This ensures all relative paths work even from subdirectories or worktrees:
+Before any other commands, run the setup contract to verify the printing-press binary is on PATH and initialize scope variables:
 
 <!-- PRESS_SETUP_CONTRACT_START -->
 ```bash
-REPO_ROOT="$(git rev-parse --show-toplevel)"
-cd "$REPO_ROOT"
+# min-binary-version: 0.2.0
+if ! command -v printing-press >/dev/null 2>&1; then
+  if [ -x "$HOME/go/bin/printing-press" ]; then
+    echo "printing-press found at ~/go/bin/printing-press but not on PATH."
+    echo "Add GOPATH/bin to your PATH:  export PATH=\"\$HOME/go/bin:\$PATH\""
+  else
+    echo "printing-press binary not found."
+    echo "Install with:  go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest"
+  fi
+  return 1 2>/dev/null || exit 1
+fi
 
-PRESS_BASE="$(basename "$REPO_ROOT" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
+# Derive scope: prefer git repo root, fall back to CWD
+_scope_dir="$(git rev-parse --show-toplevel 2>/dev/null || echo "$PWD")"
+_scope_dir="$(cd "$_scope_dir" && pwd -P)"
+
+PRESS_BASE="$(basename "$_scope_dir" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9_-]/-/g; s/^-+//; s/-+$//')"
 if [ -z "$PRESS_BASE" ]; then
   PRESS_BASE="workspace"
 fi
-PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$REPO_ROOT" | shasum -a 256 | cut -c1-8)"
+
+PRESS_SCOPE="$PRESS_BASE-$(printf '%s' "$_scope_dir" | shasum -a 256 | cut -c1-8)"
 PRESS_HOME="$HOME/printing-press"
 PRESS_RUNSTATE="$PRESS_HOME/.runstate/$PRESS_SCOPE"
 PRESS_LIBRARY="$PRESS_HOME/library"
@@ -51,7 +69,7 @@ mkdir -p "$PRESS_RUNSTATE" "$PRESS_LIBRARY"
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-If `git rev-parse` fails, you are not inside a cli-printing-press checkout. Stop and tell the user.
+After running the setup contract, check binary version compatibility. Read the `min-binary-version` field from this skill's YAML frontmatter. Run `printing-press version --json` and parse the version from the output. Compare it to `min-binary-version` using semver rules. If the installed binary is older than the minimum, warn the user: "printing-press binary vX.Y.Z is older than the minimum required vA.B.C. Run `go install github.com/mvanhorn/cli-printing-press/cmd/printing-press@latest` to update." Continue anyway but surface the warning prominently.
 
 Generated CLIs are published to `$PRESS_LIBRARY/`, not to the repo.
 
@@ -107,11 +125,7 @@ When invoked with `install <name>`:
 2. If file doesn't exist, show error: "No catalog entry for '<name>'. Run /printing-press-catalog to see available CLIs."
 3. Extract spec_url from the catalog entry
 4. Show preview: "Installing <display_name> CLI from <spec_url>"
-5. Build the printing-press binary if needed:
-   ```bash
-   go build -o ./printing-press ./cmd/printing-press
-   ```
-6. Download the spec and generate:
+5. Download the spec and generate:
    ```bash
    curl -sL -o /tmp/catalog-spec-$$.yaml "<spec_url>"
    OUTPUT_BASE="$PRESS_LIBRARY/<name>-pp-cli"
@@ -121,7 +135,7 @@ When invoked with `install <name>`:
      OUTPUT_DIR="${OUTPUT_BASE}-$i"
      i=$((i + 1))
    done
-   ./printing-press generate \
+   printing-press generate \
      --spec /tmp/catalog-spec-$$.yaml \
      --output "$OUTPUT_DIR" \
      --validate
