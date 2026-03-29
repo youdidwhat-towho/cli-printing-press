@@ -19,6 +19,8 @@ type validationGate struct {
 	run  func() error
 }
 
+const qualityGateTimeout = 5 * time.Minute
+
 func (g *Generator) Validate() error {
 	binPath := filepath.Join(g.OutputDir, naming.ValidationBinary(g.Spec.Name))
 	if err := artifacts.CleanupGeneratedCLI(g.OutputDir, artifacts.CleanupOptions{
@@ -40,28 +42,28 @@ func (g *Generator) Validate() error {
 		{
 			name: "go mod tidy",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "mod", "tidy")
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "mod", "tidy")
 				return err
 			},
 		},
 		{
 			name: "go vet ./...",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "vet", "./...")
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "vet", "./...")
 				return err
 			},
 		},
 		{
 			name: "go build ./...",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "build", "./...")
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "./...")
 				return err
 			},
 		},
 		{
 			name: "build runnable binary",
 			run: func() error {
-				_, err := runCommand(g.OutputDir, 2*time.Minute, "go", "build", "-o", binPath, "./cmd/"+naming.CLI(g.Spec.Name))
+				_, err := runCommand(g.OutputDir, qualityGateTimeout, "go", "build", "-o", binPath, "./cmd/"+naming.CLI(g.Spec.Name))
 				return err
 			},
 		},

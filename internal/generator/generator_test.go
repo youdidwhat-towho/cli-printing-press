@@ -104,7 +104,9 @@ func runGoCommand(t *testing.T, dir string, args ...string) {
 
 	cmd := exec.Command("go", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GOCACHE="+filepath.Join(dir, ".cache", "go-build"))
+	cacheDir, err := goBuildCacheDir(dir)
+	require.NoError(t, err)
+	cmd.Env = append(os.Environ(), "GOCACHE="+cacheDir)
 	output, err := cmd.CombinedOutput()
 	require.NoError(t, err, string(output))
 }
