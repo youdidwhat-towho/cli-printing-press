@@ -358,3 +358,4 @@ Display the PR URL prominently.
 - **Repo unreachable:** Report clearly in Step 6
 - **Branch conflict:** Ask user in Step 7 (overwrite or timestamp)
 - **Push fails:** Report the error, suggest checking `gh auth status`
+- **Staging cleanup:** If any step after packaging (Steps 6-7) fails, remove the staging directory created in Step 5 before stopping. This prevents accumulation of full CLI copies in temp directories across retries

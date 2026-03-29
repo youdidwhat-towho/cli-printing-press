@@ -468,7 +468,10 @@ func findMostRecentRun(msAPIDir string) (string, error) {
 	var runs []string
 	for _, e := range entries {
 		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
-			runs = append(runs, e.Name())
+			// Only include runs that actually contain files
+			if hasContent(filepath.Join(msAPIDir, e.Name())) {
+				runs = append(runs, e.Name())
+			}
 		}
 	}
 
@@ -479,4 +482,23 @@ func findMostRecentRun(msAPIDir string) (string, error) {
 	// Lexicographic sort (run-ids are timestamp-prefixed)
 	sort.Strings(runs)
 	return runs[len(runs)-1], nil
+}
+
+// hasContent checks if a directory contains at least one non-directory entry,
+// recursively. Returns false for empty directories or directories containing
+// only empty subdirectories.
+func hasContent(dir string) bool {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			return true
+		}
+		if hasContent(filepath.Join(dir, e.Name())) {
+			return true
+		}
+	}
+	return false
 }

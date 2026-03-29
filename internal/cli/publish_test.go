@@ -212,14 +212,44 @@ func TestPublishPackageTargetExists(t *testing.T) {
 func TestFindMostRecentRun(t *testing.T) {
 	dir := t.TempDir()
 
-	// Create run directories with timestamp-prefixed names
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "20260327-100000"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "20260328-132022"), 0o755))
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "20260326-090000"), 0o755))
+	// Create run directories with timestamp-prefixed names and content
+	for _, run := range []string{"20260327-100000", "20260328-132022", "20260326-090000"} {
+		researchDir := filepath.Join(dir, run, "research")
+		require.NoError(t, os.MkdirAll(researchDir, 0o755))
+		require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("test"), 0o644))
+	}
 
 	runID, err := findMostRecentRun(dir)
 	require.NoError(t, err)
 	assert.Equal(t, "20260328-132022", runID, "should pick the most recent by lexicographic sort")
+}
+
+func TestFindMostRecentRunSkipsEmptyDirectories(t *testing.T) {
+	dir := t.TempDir()
+
+	// Most recent run is empty (interrupted archive)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "20260329-100000"), 0o755))
+
+	// Older run has actual content
+	researchDir := filepath.Join(dir, "20260328-132022", "research")
+	require.NoError(t, os.MkdirAll(researchDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(researchDir, "brief.md"), []byte("test"), 0o644))
+
+	runID, err := findMostRecentRun(dir)
+	require.NoError(t, err)
+	assert.Equal(t, "20260328-132022", runID, "should skip empty run and use older one with content")
+}
+
+func TestFindMostRecentRunAllEmpty(t *testing.T) {
+	dir := t.TempDir()
+
+	// All runs are empty (no actual manuscript content)
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "20260328-132022"), 0o755))
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "20260327-100000"), 0o755))
+
+	runID, err := findMostRecentRun(dir)
+	require.NoError(t, err)
+	assert.Empty(t, runID, "should return empty when all runs are empty directories")
 }
 
 func TestFindMostRecentRunEmpty(t *testing.T) {
