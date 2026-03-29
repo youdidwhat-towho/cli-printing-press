@@ -188,11 +188,8 @@ func resolveEmbossTarget(flagDir string, args []string) (string, error) {
 	case len(args) > 0:
 		target := args[0]
 
-		// If it contains a path separator or exists on disk, treat as a path.
+		// Anything that looks like a path should bypass name lookup.
 		if strings.ContainsRune(target, filepath.Separator) || strings.HasPrefix(target, "~") {
-			return target, nil
-		}
-		if _, err := os.Stat(target); err == nil {
 			return target, nil
 		}
 

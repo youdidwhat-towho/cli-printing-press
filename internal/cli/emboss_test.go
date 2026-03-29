@@ -13,6 +13,7 @@ import (
 
 func TestResolveEmbossTarget(t *testing.T) {
 	home := t.TempDir()
+	t.Chdir(t.TempDir())
 	t.Setenv("PRINTING_PRESS_HOME", home)
 
 	libraryDir := filepath.Join(home, "library")
@@ -51,6 +52,18 @@ func TestResolveEmbossTarget(t *testing.T) {
 			want:    filepath.Join(libraryDir, "discord-pp-cli"),
 		},
 		{
+			name:    "bare name prefers library over local path",
+			flagDir: "",
+			args:    []string{"notion"},
+			want:    filepath.Join(libraryDir, "notion-pp-cli"),
+		},
+		{
+			name:    "bare name does not resolve local cwd entry",
+			flagDir: "",
+			args:    []string{"local-only"},
+			wantErr: `no CLI named "local-only" found`,
+		},
+		{
 			name:    "no match",
 			flagDir: "",
 			args:    []string{"nonexistent"},
@@ -72,6 +85,13 @@ func TestResolveEmbossTarget(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
+			if tt.name == "bare name prefers library over local path" {
+				require.NoError(t, os.MkdirAll("notion", 0o755))
+			}
+			if tt.name == "bare name does not resolve local cwd entry" {
+				require.NoError(t, os.MkdirAll("local-only", 0o755))
+			}
+
 			got, err := resolveEmbossTarget(tt.flagDir, tt.args)
 			if tt.wantErr != "" {
 				require.Error(t, err)
