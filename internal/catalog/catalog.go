@@ -143,7 +143,7 @@ func (e *Entry) Validate() error {
 		return fmt.Errorf("category is required")
 	}
 	if _, ok := validCategories[e.Category]; !ok {
-		return fmt.Errorf("category must be one of: developer-tools, monitoring, cloud, project-management, productivity, social-and-messaging, sales-and-crm, marketing, payments, auth, commerce, ai, media-and-entertainment, devices, other")
+		return fmt.Errorf("category must be one of: %s", publicCategoryList())
 	}
 	if e.SpecURL == "" {
 		return fmt.Errorf("spec_url is required")
@@ -165,4 +165,17 @@ func (e *Entry) Validate() error {
 	}
 
 	return nil
+}
+
+// publicCategoryList returns a sorted, comma-separated string of all
+// valid categories excluding "example" (which is internal-only).
+func publicCategoryList() string {
+	cats := make([]string, 0, len(validCategories))
+	for c := range validCategories {
+		if c != "example" {
+			cats = append(cats, c)
+		}
+	}
+	sort.Strings(cats)
+	return strings.Join(cats, ", ")
 }

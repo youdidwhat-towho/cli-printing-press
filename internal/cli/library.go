@@ -71,11 +71,7 @@ func newLibraryListCmd() *cobra.Command {
 				if cat == "" {
 					cat = "-"
 				}
-				desc := e.Description
-				if desc == "" {
-					desc = ""
-				}
-				fmt.Printf("  %-30s %-20s %s\n", e.CLIName, cat, desc)
+				fmt.Printf("  %-30s %-20s %s\n", e.CLIName, cat, e.Description)
 			}
 
 			return nil
