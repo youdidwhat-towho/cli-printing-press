@@ -15,22 +15,22 @@ import (
 var namePattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 var validCategories = map[string]struct{}{
-	"developer-tools":      {},
-	"monitoring":           {},
-	"cloud":                {},
-	"project-management":   {},
-	"productivity":         {},
-	"social-and-messaging": {},
-	"sales-and-crm":       {},
-	"marketing":            {},
-	"payments":             {},
-	"auth":                 {},
-	"commerce":             {},
-	"ai":                   {},
+	"developer-tools":         {},
+	"monitoring":              {},
+	"cloud":                   {},
+	"project-management":      {},
+	"productivity":            {},
+	"social-and-messaging":    {},
+	"sales-and-crm":           {},
+	"marketing":               {},
+	"payments":                {},
+	"auth":                    {},
+	"commerce":                {},
+	"ai":                      {},
 	"media-and-entertainment": {},
-	"devices":                {},
-	"other":                  {},
-	"example":                {},
+	"devices":                 {},
+	"other":                   {},
+	"example":                 {},
 }
 
 var validSpecFormats = map[string]struct{}{
@@ -143,7 +143,7 @@ func (e *Entry) Validate() error {
 		return fmt.Errorf("category is required")
 	}
 	if _, ok := validCategories[e.Category]; !ok {
-		return fmt.Errorf("category must be one of: %s", publicCategoryList())
+		return fmt.Errorf("category must be one of: %s", strings.Join(PublicCategories(), ", "))
 	}
 	if e.SpecURL == "" {
 		return fmt.Errorf("spec_url is required")
@@ -167,9 +167,9 @@ func (e *Entry) Validate() error {
 	return nil
 }
 
-// publicCategoryList returns a sorted, comma-separated string of all
-// valid categories excluding "example" (which is internal-only).
-func publicCategoryList() string {
+// PublicCategories returns the sorted list of user-facing categories.
+// It excludes "example", which is internal-only for test fixtures.
+func PublicCategories() []string {
 	cats := make([]string, 0, len(validCategories))
 	for c := range validCategories {
 		if c != "example" {
@@ -177,5 +177,14 @@ func publicCategoryList() string {
 		}
 	}
 	sort.Strings(cats)
-	return strings.Join(cats, ", ")
+	return cats
+}
+
+// IsPublicCategory reports whether category is allowed in user-facing workflows.
+func IsPublicCategory(category string) bool {
+	if category == "example" {
+		return false
+	}
+	_, ok := validCategories[category]
+	return ok
 }

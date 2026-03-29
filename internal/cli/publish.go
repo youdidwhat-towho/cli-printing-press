@@ -11,14 +11,15 @@ import (
 	"strings"
 	"time"
 
+	catalogpkg "github.com/mvanhorn/cli-printing-press/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/spf13/cobra"
 )
 
 const (
-	goCommandTimeout    = 2 * time.Minute
-	binaryCheckTimeout  = 15 * time.Second
+	goCommandTimeout   = 2 * time.Minute
+	binaryCheckTimeout = 15 * time.Second
 )
 
 func newPublishCmd() *cobra.Command {
@@ -57,12 +58,12 @@ type ValidateResult struct {
 
 // PackageResult is the JSON output of publish package.
 type PackageResult struct {
-	StagedDir            string `json:"staged_dir"`
-	CLIName              string `json:"cli_name"`
-	APIName              string `json:"api_name"`
-	Category             string `json:"category"`
-	ManuscriptsIncluded  bool   `json:"manuscripts_included"`
-	RunID                string `json:"run_id,omitempty"`
+	StagedDir           string `json:"staged_dir"`
+	CLIName             string `json:"cli_name"`
+	APIName             string `json:"api_name"`
+	Category            string `json:"category"`
+	ManuscriptsIncluded bool   `json:"manuscripts_included"`
+	RunID               string `json:"run_id,omitempty"`
 }
 
 func newPublishValidateCmd() *cobra.Command {
@@ -133,8 +134,8 @@ func newPublishPackageCmd() *cobra.Command {
 	var asJSON bool
 
 	cmd := &cobra.Command{
-		Use:   "package",
-		Short: "Package a CLI for publishing to the library repo",
+		Use:     "package",
+		Short:   "Package a CLI for publishing to the library repo",
 		Example: `  printing-press publish package --dir ~/printing-press/library/notion-pp-cli --category productivity --target /tmp/staging --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dir == "" {
@@ -145,6 +146,12 @@ func newPublishPackageCmd() *cobra.Command {
 			}
 			if strings.Contains(category, "/") || strings.Contains(category, "\\") || strings.Contains(category, "..") {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--category must be a simple slug (no path separators or '..')")}
+			}
+			if !catalogpkg.IsPublicCategory(category) {
+				return &ExitError{
+					Code: ExitInputError,
+					Err:  fmt.Errorf("--category must be one of: %s", strings.Join(catalogpkg.PublicCategories(), ", ")),
+				}
 			}
 			if target == "" {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--target is required")}
@@ -184,12 +191,17 @@ func newPublishPackageCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("resolved staging path %s escapes target directory %s", absStaging, absTarget)}
 			}
 
+			cleanupTarget := func() {
+				_ = os.RemoveAll(target)
+			}
+
 			if err := os.MkdirAll(filepath.Dir(stagingCLIDir), 0o755); err != nil {
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("creating staging dir: %w", err)}
 			}
 
 			// Copy CLI source
 			if err := pipeline.CopyDir(dir, stagingCLIDir); err != nil {
+				cleanupTarget()
 				return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying CLI: %w", err)}
 			}
 
@@ -214,7 +226,8 @@ func newPublishPackageCmd() *cobra.Command {
 				srcMsDir := filepath.Join(msAPIDir, runID)
 				dstMsDir := filepath.Join(stagingCLIDir, ".manuscripts", runID)
 				if err := pipeline.CopyDir(srcMsDir, dstMsDir); err != nil {
-					fmt.Fprintf(os.Stderr, "warning: could not copy manuscripts: %v\n", err)
+					cleanupTarget()
+					return &ExitError{Code: ExitPublishError, Err: fmt.Errorf("copying manuscripts: %w", err)}
 				} else {
 					result.ManuscriptsIncluded = true
 				}
@@ -273,6 +286,14 @@ func runValidation(dir string) ValidateResult {
 		}
 	}
 
+	cliName := result.CLIName
+	if cliName == "" {
+		cliName = filepath.Base(dir)
+	}
+
+	restoreBuildArtifacts := snapshotFiles(buildArtifactCandidates(dir, cliName))
+	defer restoreBuildArtifacts()
+
 	// 2. go mod tidy check — snapshot files, run tidy, compare, restore
 	tidyCheck := checkGoModTidy(dir)
 	if !tidyCheck.Passed {
@@ -294,18 +315,14 @@ func runValidation(dir string) ValidateResult {
 	}
 	result.Checks = append(result.Checks, buildCheck)
 
-	// 5. --help check
-	cliName := result.CLIName
-	if cliName == "" {
-		cliName = filepath.Base(dir)
+	// 5. --help / --version checks use a dedicated temp binary so validation
+	// exercises current source without depending on or mutating source-tree artifacts.
+	binaryPath, cleanupBinary, err := buildValidationBinary(dir, cliName)
+	if cleanupBinary != nil {
+		defer cleanupBinary()
 	}
-	binaryPath, binaryCreated := findBuiltBinary(dir, cliName)
-	if binaryCreated {
-		defer os.Remove(binaryPath) // Clean up to avoid staging compiled artifacts
-	}
-	if binaryPath == "" {
+	if err != nil {
 		result.Checks = append(result.Checks, CheckResult{Name: "--help", Passed: false, Error: "built binary not found"})
-		allPassed = false
 		result.Checks = append(result.Checks, CheckResult{Name: "--version", Passed: false, Error: "built binary not found"})
 		allPassed = false
 	} else {
@@ -438,42 +455,76 @@ func checkGoModTidy(dir string) CheckResult {
 	return CheckResult{Name: "go mod tidy", Passed: true}
 }
 
-// findBuiltBinary locates or builds the CLI binary. Returns the path and
-// whether the binary was created by this function (and should be cleaned up
-// after use to avoid staging compiled artifacts).
-func findBuiltBinary(dir, cliName string) (path string, created bool) {
-	// Check existing candidate paths first
-	candidates := []string{
+func buildValidationBinary(dir, cliName string) (path string, cleanup func(), err error) {
+	tempDir, err := os.MkdirTemp(dir, ".publish-validate-*")
+	if err != nil {
+		return "", nil, err
+	}
+
+	cleanup = func() {
+		_ = os.RemoveAll(tempDir)
+	}
+
+	outPath := filepath.Join(tempDir, cliName)
+	if err := buildBinaryAtPath(dir, outPath, "./cmd/"+cliName); err == nil {
+		return outPath, cleanup, nil
+	}
+	if err := buildBinaryAtPath(dir, outPath, "."); err == nil {
+		return outPath, cleanup, nil
+	}
+
+	cleanup()
+	return "", nil, fmt.Errorf("building validation binary")
+}
+
+func buildBinaryAtPath(dir, outPath, pkg string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), goCommandTimeout)
+	defer cancel()
+	buildCmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, pkg)
+	buildCmd.Dir = dir
+	return buildCmd.Run()
+}
+
+func buildArtifactCandidates(dir, cliName string) []string {
+	return []string{
 		filepath.Join(dir, cliName),
 		filepath.Join(dir, "cmd", cliName, cliName),
 	}
+}
 
-	for _, c := range candidates {
-		if info, err := os.Stat(c); err == nil && !info.IsDir() {
-			return c, false
+type fileSnapshot struct {
+	path    string
+	exists  bool
+	mode    os.FileMode
+	content []byte
+}
+
+func snapshotFiles(paths []string) func() {
+	snapshots := make([]fileSnapshot, 0, len(paths))
+	for _, path := range paths {
+		snap := fileSnapshot{path: path}
+		if info, err := os.Stat(path); err == nil && !info.IsDir() {
+			content, readErr := os.ReadFile(path)
+			if readErr == nil {
+				snap.exists = true
+				snap.mode = info.Mode()
+				snap.content = content
+			}
+		}
+		snapshots = append(snapshots, snap)
+	}
+
+	return func() {
+		for _, snap := range snapshots {
+			if snap.exists {
+				if err := os.WriteFile(snap.path, snap.content, snap.mode); err == nil {
+					_ = os.Chmod(snap.path, snap.mode)
+				}
+				continue
+			}
+			_ = os.Remove(snap.path)
 		}
 	}
-
-	// Fallback: try targeted build to produce the binary
-	outPath := filepath.Join(dir, cliName)
-	ctx, cancel := context.WithTimeout(context.Background(), goCommandTimeout)
-	defer cancel()
-	buildCmd := exec.CommandContext(ctx, "go", "build", "-o", outPath, "./cmd/"+cliName)
-	buildCmd.Dir = dir
-	if err := buildCmd.Run(); err == nil {
-		return outPath, true
-	}
-
-	// Last resort: try building from root
-	ctx2, cancel2 := context.WithTimeout(context.Background(), goCommandTimeout)
-	defer cancel2()
-	buildCmd2 := exec.CommandContext(ctx2, "go", "build", "-o", outPath, ".")
-	buildCmd2.Dir = dir
-	if err := buildCmd2.Run(); err == nil {
-		return outPath, true
-	}
-
-	return "", false
 }
 
 func findMostRecentRun(msAPIDir string) (string, error) {

@@ -244,6 +244,68 @@ func TestPublishPackageCategoryPathTraversal(t *testing.T) {
 	}
 }
 
+func TestPublishPackageRejectsUnknownCategory(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "banana", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "--category must be one of:")
+}
+
+func TestPublishPackageDoesNotStageCompiledBinary(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	output, err := runWithCapturedStdout(t, cmd.Execute)
+	require.NoError(t, err)
+
+	var result PackageResult
+	require.NoError(t, json.Unmarshal([]byte(output), &result))
+
+	_, sourceErr := os.Stat(filepath.Join(cliDir, "test-pp-cli"))
+	assert.ErrorIs(t, sourceErr, os.ErrNotExist, "validation should not leave a root binary behind")
+
+	_, stagedErr := os.Stat(filepath.Join(result.StagedDir, "test-pp-cli"))
+	assert.ErrorIs(t, stagedErr, os.ErrNotExist, "packaged source should not include a compiled binary")
+}
+
+func TestPublishPackageFailsWhenManuscriptsCopyFails(t *testing.T) {
+	home := setLibraryTestEnv(t)
+	cliDir := filepath.Join(home, "library", "test-pp-cli")
+	writePublishableTestCLI(t, cliDir)
+
+	runID := "20260328-132022"
+	manuscriptFile := filepath.Join(home, "manuscripts", "test", runID, "research", "brief.md")
+	require.NoError(t, os.MkdirAll(filepath.Dir(manuscriptFile), 0o755))
+	require.NoError(t, os.WriteFile(manuscriptFile, []byte("brief"), 0o600))
+	require.NoError(t, os.Chmod(manuscriptFile, 0))
+	defer func() {
+		_ = os.Chmod(manuscriptFile, 0o600)
+	}()
+
+	target := filepath.Join(t.TempDir(), "staging")
+	cmd := newPublishCmd()
+	cmd.SetArgs([]string{"package", "--dir", cliDir, "--category", "other", "--target", target, "--json"})
+
+	err := cmd.Execute()
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "copying manuscripts")
+
+	_, statErr := os.Stat(target)
+	assert.ErrorIs(t, statErr, os.ErrNotExist, "failed packaging should clean up the staging target")
+}
+
 func TestFindMostRecentRun(t *testing.T) {
 	dir := t.TempDir()
 
@@ -298,4 +360,41 @@ func TestFindMostRecentRunEmpty(t *testing.T) {
 func TestFindMostRecentRunNonexistentDir(t *testing.T) {
 	_, err := findMostRecentRun("/nonexistent/path")
 	assert.Error(t, err)
+}
+
+func writePublishableTestCLI(t *testing.T, dir string) {
+	t.Helper()
+
+	require.NoError(t, os.MkdirAll(filepath.Join(dir, "cmd", "test-pp-cli"), 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(`module example.com/test-pp-cli
+
+go 1.24
+`), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "cmd", "test-pp-cli", "main.go"), []byte(`package main
+
+import (
+	"fmt"
+	"os"
+)
+
+func main() {
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--help":
+			fmt.Println("help")
+			return
+		case "--version":
+			fmt.Println("v0.0.0")
+			return
+		}
+	}
+	fmt.Println("ok")
+}
+`), 0o644))
+
+	writeTestManifest(t, dir, pipeline.CLIManifest{
+		SchemaVersion: 1,
+		APIName:       "test",
+		CLIName:       "test-pp-cli",
+	})
 }

@@ -198,6 +198,20 @@ func TestCategoryErrorMessageExcludesExample(t *testing.T) {
 	assert.NotContains(t, err.Error(), "example")
 }
 
+func TestPublicCategoriesExcludeExample(t *testing.T) {
+	categories := PublicCategories()
+	assert.NotContains(t, categories, "example")
+	assert.Contains(t, categories, "developer-tools")
+	assert.Contains(t, categories, "other")
+}
+
+func TestIsPublicCategory(t *testing.T) {
+	assert.True(t, IsPublicCategory("developer-tools"))
+	assert.True(t, IsPublicCategory("other"))
+	assert.False(t, IsPublicCategory("example"))
+	assert.False(t, IsPublicCategory("banana"))
+}
+
 func TestParseDir(t *testing.T) {
 	entries, err := ParseDir("../../testdata/catalog")
 	require.NoError(t, err)

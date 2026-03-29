@@ -182,7 +182,7 @@ If `$PUBLISH_REPO_DIR` does not exist:
 
 3. Clone based on access:
    - **Push access:** Clone directly
-   - **No push access:** Fork first with `gh repo fork mvanhorn/printing-press-library --clone=false`, then clone the fork
+   - **No push access:** Fork first with `gh repo fork mvanhorn/printing-press-library --clone=false`, then clone the fork and add `upstream` pointing at `mvanhorn/printing-press-library`
 
 4. Cache the config:
    ```json
@@ -197,13 +197,18 @@ If `$PUBLISH_REPO_DIR` does not exist:
 
 ### Subsequent publishes
 
-Read `$PUBLISH_CONFIG`, then freshen. Use `git reset --hard` instead of `git pull` because this is a managed clone, not a user working tree — it should always match upstream exactly:
+Read `$PUBLISH_CONFIG`, then freshen. Use `git reset --hard` instead of `git pull` because this is a managed clone, not a user working tree — it should always match the canonical upstream exactly:
 
 ```bash
 cd "$PUBLISH_REPO_DIR"
 git fetch origin
+git fetch upstream 2>/dev/null || true
 git checkout main
-git reset --hard origin/main
+if git rev-parse --verify upstream/main >/dev/null 2>&1; then
+  git reset --hard upstream/main
+else
+  git reset --hard origin/main
+fi
 ```
 
 Also verify the clone is healthy:
@@ -284,6 +289,12 @@ cd "$PUBLISH_REPO_DIR"
 git add library/ registry.json
 git commit -m "feat(<api-name>): add <cli-name>"
 git push -u origin feat/<cli-name>
+```
+
+If you chose "Overwrite existing branch" earlier, replace the push command with:
+
+```bash
+git push --force-with-lease -u origin feat/<cli-name>
 ```
 
 ### Create PR
