@@ -16,11 +16,13 @@ import (
 
 // mockSource implements crowdSniffSource for testing.
 type mockSource struct {
-	result crowdsniff.SourceResult
-	err    error
+	result     crowdsniff.SourceResult
+	err        error
+	calledWith string // captures the apiName argument
 }
 
-func (m *mockSource) Discover(_ context.Context, _ string) (crowdsniff.SourceResult, error) {
+func (m *mockSource) Discover(_ context.Context, apiName string) (crowdsniff.SourceResult, error) {
+	m.calledWith = apiName
 	return m.result, m.err
 }
 
@@ -59,15 +61,15 @@ func TestRunCrowdSniff_HappyPath(t *testing.T) {
 	outputPath := filepath.Join(outputDir, "test-spec.yaml")
 	var stdout bytes.Buffer
 
+	src := &mockSource{result: endpointsResult("https://api.example.com",
+		crowdsniff.DiscoveredEndpoint{Method: "GET", Path: "/v1/users", SourceTier: crowdsniff.TierOfficialSDK, SourceName: "sdk"},
+		crowdsniff.DiscoveredEndpoint{Method: "POST", Path: "/v1/users", SourceTier: crowdsniff.TierOfficialSDK, SourceName: "sdk"},
+	)}
+
 	opts := crowdSniffOptions{
-		sources: []crowdSniffSource{
-			&mockSource{result: endpointsResult("https://api.example.com",
-				crowdsniff.DiscoveredEndpoint{Method: "GET", Path: "/v1/users", SourceTier: crowdsniff.TierOfficialSDK, SourceName: "sdk"},
-				crowdsniff.DiscoveredEndpoint{Method: "POST", Path: "/v1/users", SourceTier: crowdsniff.TierOfficialSDK, SourceName: "sdk"},
-			)},
-		},
-		stdout: &stdout,
-		stderr: &bytes.Buffer{},
+		sources: []crowdSniffSource{src},
+		stdout:  &stdout,
+		stderr:  &bytes.Buffer{},
 	}
 
 	err := runCrowdSniff(context.Background(), "example", "https://api.example.com", outputPath, false, opts)
@@ -76,9 +78,14 @@ func TestRunCrowdSniff_HappyPath(t *testing.T) {
 	assert.Contains(t, stdout.String(), "Spec written to")
 	assert.Contains(t, stdout.String(), "2 endpoints")
 
-	// Verify spec file was written.
-	_, err = os.Stat(outputPath)
-	assert.NoError(t, err)
+	// Verify API name was passed through to source.
+	assert.Equal(t, "example", src.calledWith)
+
+	// Verify spec file was written with correct content.
+	data, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "base_url: https://api.example.com")
+	assert.Contains(t, string(data), "name: example")
 }
 
 func TestRunCrowdSniff_JSONOutput(t *testing.T) {
@@ -105,6 +112,10 @@ func TestRunCrowdSniff_JSONOutput(t *testing.T) {
 	require.NoError(t, json.Unmarshal(stdout.Bytes(), &jsonOut))
 	assert.Equal(t, outputPath, jsonOut["spec_path"])
 	assert.Equal(t, float64(1), jsonOut["endpoints"])
+	assert.Equal(t, float64(1), jsonOut["resources"])
+	tierBreakdown, ok := jsonOut["tier_breakdown"].(map[string]interface{})
+	require.True(t, ok, "tier_breakdown should be a map")
+	assert.Equal(t, float64(1), tierBreakdown[crowdsniff.TierCodeSearch])
 }
 
 func TestRunCrowdSniff_NoEndpointsDiscovered(t *testing.T) {
@@ -215,9 +226,33 @@ func TestRunCrowdSniff_SourceErrorGracefulDegradation(t *testing.T) {
 	assert.Contains(t, stderr.String(), "warning")
 	assert.Contains(t, stderr.String(), "npm registry down")
 
-	// Spec still written from the successful source.
-	_, err = os.Stat(outputPath)
-	assert.NoError(t, err)
+	// Spec still written from the successful source with correct content.
+	data, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	assert.Contains(t, string(data), "/users")
+	assert.Contains(t, string(data), "https://api.example.com")
+}
+
+func TestRunCrowdSniff_AllSourcesFail(t *testing.T) {
+	t.Parallel()
+
+	var stderr bytes.Buffer
+	opts := crowdSniffOptions{
+		sources: []crowdSniffSource{
+			&mockSource{err: fmt.Errorf("npm down")},
+			&mockSource{err: fmt.Errorf("github down")},
+		},
+		stdout: &bytes.Buffer{},
+		stderr: &stderr,
+	}
+
+	err := runCrowdSniff(context.Background(), "test", "https://api.example.com", "", false, opts)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "no endpoints discovered")
+
+	// Both warnings should be logged.
+	assert.Contains(t, stderr.String(), "npm down")
+	assert.Contains(t, stderr.String(), "github down")
 }
 
 func TestRunCrowdSniff_OutputDirCreated(t *testing.T) {

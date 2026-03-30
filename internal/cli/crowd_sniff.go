@@ -125,10 +125,6 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 		outputPath = defaultCrowdSniffCachePath(apiName)
 	}
 
-	if err := validateOutputPath(outputPath); err != nil {
-		return err
-	}
-
 	if err := websniff.WriteSpec(apiSpec, outputPath); err != nil {
 		return fmt.Errorf("writing spec: %w", err)
 	}
@@ -180,28 +176,6 @@ func validateCrowdSniffAPIName(name string) error {
 			return fmt.Errorf("--api value contains path traversal characters")
 		}
 	}
-	return nil
-}
-
-// validateOutputPath checks the resolved output path for traversal.
-func validateOutputPath(outputPath string) error {
-	absPath, err := filepath.Abs(outputPath)
-	if err != nil {
-		return fmt.Errorf("resolving output path: %w", err)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil // can't validate, allow it
-	}
-
-	cacheRoot := filepath.Join(home, ".cache", "printing-press")
-	if strings.HasPrefix(absPath, cacheRoot+string(filepath.Separator)) {
-		return nil
-	}
-
-	// If using a custom --output path (not under cache), that's fine.
-	// The traversal check is only for the auto-generated default path.
 	return nil
 }
 
