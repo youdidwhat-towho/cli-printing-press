@@ -8,17 +8,19 @@ import (
 )
 
 type APISpec struct {
-	Name        string              `yaml:"name"`
-	Description string              `yaml:"description"`
-	Version     string              `yaml:"version"`
-	BaseURL     string              `yaml:"base_url"`
-	BasePath    string              `yaml:"base_path,omitempty"`
-	Owner       string              `yaml:"owner,omitempty"`       // GitHub owner for import paths and Homebrew tap
-	SpecSource  string              `yaml:"spec_source,omitempty"` // official, community, sniffed, docs — affects generated client defaults
-	Auth        AuthConfig          `yaml:"auth"`
-	Config      ConfigSpec          `yaml:"config"`
-	Resources   map[string]Resource `yaml:"resources"`
-	Types       map[string]TypeDef  `yaml:"types"`
+	Name          string              `yaml:"name"`
+	Description   string              `yaml:"description"`
+	Version       string              `yaml:"version"`
+	BaseURL       string              `yaml:"base_url"`
+	BasePath      string              `yaml:"base_path,omitempty"`
+	Owner         string              `yaml:"owner,omitempty"`          // GitHub owner for import paths and Homebrew tap
+	SpecSource    string              `yaml:"spec_source,omitempty"`    // official, community, sniffed, docs — affects generated client defaults
+	ClientPattern string              `yaml:"client_pattern,omitempty"` // rest (default), proxy-envelope — affects generated HTTP client
+	ProxyRoutes   map[string]string   `yaml:"proxy_routes,omitempty"`   // path prefix → service name for proxy-envelope routing
+	Auth          AuthConfig          `yaml:"auth"`
+	Config        ConfigSpec          `yaml:"config"`
+	Resources     map[string]Resource `yaml:"resources"`
+	Types         map[string]TypeDef  `yaml:"types"`
 }
 
 type AuthConfig struct {

@@ -413,6 +413,26 @@ When making API calls during sniff (browser-use eval, fetch, or direct HTTP requ
 
 Track the current delay mentally. Report the effective rate when summarizing sniff results: "Sniffed N endpoints at ~X req/s effective rate."
 
+#### Proxy Pattern Detection
+
+After capturing API traffic, check if the API uses a proxy-envelope pattern:
+
+1. **Same-URL signal**: If all captured XHR/fetch URLs resolve to the same path (e.g., all calls go to `_api/ws/proxy`), the API likely uses a proxy pattern
+2. **Envelope signal**: If intercepted request bodies contain `service`, `method`, and `path` keys (or similar routing fields), it's a proxy-envelope
+3. **Confirmation**: If both signals are present, classify as `client_pattern: proxy-envelope`
+
+When a proxy pattern is detected:
+- Note the proxy URL (it becomes the spec's `servers[0].url`)
+- Extract the service routing from request bodies — build an `x-proxy-routes` map of path prefixes to service names
+- Write `x-proxy-routes` into the generated spec's `info` extensions:
+  ```yaml
+  info:
+    x-proxy-routes:
+      /v1/api/: publishing
+      /search-all: search
+  ```
+- Pass `--client-pattern proxy-envelope` to the generate command in Phase 2
+
 #### Step 1: Detect capture tools
 
 Check which browser automation tools are available:
@@ -775,6 +795,8 @@ printing-press generate \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
   --spec-source sniffed \
   --force --lenient --validate
+# If proxy pattern was detected during sniff, add:
+#   --client-pattern proxy-envelope
 ```
 
 Sniff-only (no original spec, sniff was the primary source):
@@ -785,6 +807,8 @@ printing-press generate \
   --output "$PRESS_LIBRARY/<api>-pp-cli" \
   --spec-source sniffed \
   --force --lenient --validate
+# If proxy pattern was detected during sniff, add:
+#   --client-pattern proxy-envelope
 ```
 
 Docs-only:

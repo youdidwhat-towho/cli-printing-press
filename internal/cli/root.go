@@ -66,6 +66,7 @@ func newGenerateCmd() *cobra.Command {
 	var asJSON bool
 	var dryRun bool
 	var specSource string
+	var clientPattern string
 
 	cmd := &cobra.Command{
 		Use:   "generate",
@@ -125,6 +126,14 @@ func newGenerateCmd() *cobra.Command {
 					}
 				} else {
 					parsed.SpecSource = "docs"
+				}
+				if clientPattern != "" {
+					switch clientPattern {
+					case "rest", "proxy-envelope":
+						parsed.ClientPattern = clientPattern
+					default:
+						return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--client-pattern must be one of: rest, proxy-envelope (got %q)", clientPattern)}
+					}
 				}
 
 				explicitOutput := outputDir != ""
@@ -231,6 +240,14 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--spec-source must be one of: official, community, sniffed, docs (got %q)", specSource)}
 				}
 			}
+			if clientPattern != "" {
+				switch clientPattern {
+				case "rest", "proxy-envelope":
+					apiSpec.ClientPattern = clientPattern
+				default:
+					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--client-pattern must be one of: rest, proxy-envelope (got %q)", clientPattern)}
+				}
+			}
 
 			explicitOutput := outputDir != ""
 			if outputDir == "" {
@@ -320,6 +337,7 @@ func newGenerateCmd() *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false, "Parse spec and show what would be generated without writing files (remote specs are still fetched)")
 	cmd.Flags().StringVar(&specSource, "spec-source", "", "Spec provenance: official, community, sniffed, docs (affects generated client defaults like rate limiting)")
+	cmd.Flags().StringVar(&clientPattern, "client-pattern", "", "HTTP client pattern: rest (default), proxy-envelope (wraps requests in POST envelope)")
 
 	return cmd
 }

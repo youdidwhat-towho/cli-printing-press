@@ -150,6 +150,21 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		version = strings.TrimSpace(doc.Info.Version)
 	}
 
+	// Extract x-proxy-routes extension for proxy-envelope client pattern
+	var proxyRoutes map[string]string
+	if doc.Info != nil && doc.Info.Extensions != nil {
+		if raw, ok := doc.Info.Extensions["x-proxy-routes"]; ok {
+			if m, ok := raw.(map[string]interface{}); ok {
+				proxyRoutes = make(map[string]string, len(m))
+				for k, v := range m {
+					if s, ok := v.(string); ok {
+						proxyRoutes[k] = s
+					}
+				}
+			}
+		}
+	}
+
 	baseURL := ""
 	basePath := ""
 	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
@@ -198,6 +213,7 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		Version:     version,
 		BaseURL:     baseURL,
 		BasePath:    basePath,
+		ProxyRoutes: proxyRoutes,
 		Auth:        mapAuth(doc, name),
 		Config: spec.ConfigSpec{
 			Format: "toml",
