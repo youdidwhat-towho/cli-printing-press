@@ -116,6 +116,15 @@ func newCatalogShowCmd() *cobra.Command {
 			if entry.Homepage != "" {
 				fmt.Printf("Homepage:       %s\n", entry.Homepage)
 			}
+			if entry.SpecSource != "" {
+				fmt.Printf("Spec Source:    %s\n", entry.SpecSource)
+			}
+			if entry.ClientPattern != "" {
+				fmt.Printf("Client Pattern: %s\n", entry.ClientPattern)
+			}
+			if entry.AuthRequired != nil {
+				fmt.Printf("Auth Required:  %v\n", *entry.AuthRequired)
+			}
 			if entry.Notes != "" {
 				fmt.Printf("Notes:          %s\n", entry.Notes)
 			}

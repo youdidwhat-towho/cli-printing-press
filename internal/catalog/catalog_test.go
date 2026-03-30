@@ -112,6 +112,20 @@ func TestValidateEntry(t *testing.T) {
 			},
 			wantErr: "description is required",
 		},
+		{
+			name: "invalid spec_source",
+			mutate: func(e *Entry) {
+				e.SpecSource = "guessed"
+			},
+			wantErr: "spec_source must be one of",
+		},
+		{
+			name: "invalid client_pattern",
+			mutate: func(e *Entry) {
+				e.ClientPattern = "soap"
+			},
+			wantErr: "client_pattern must be one of",
+		},
 	}
 
 	for _, tt := range tests {
@@ -196,6 +210,40 @@ func TestCategoryErrorMessageExcludesExample(t *testing.T) {
 	err := entry.Validate()
 	require.Error(t, err)
 	assert.NotContains(t, err.Error(), "example")
+}
+
+func TestSniffedEntryValid(t *testing.T) {
+	f := false
+	entry := Entry{
+		Name:          "test-sniffed",
+		DisplayName:   "Test Sniffed API",
+		Description:   "A sniffed catalog entry",
+		Category:      "developer-tools",
+		SpecURL:       "https://example.com/specs/sniffed.yaml",
+		SpecFormat:    "yaml",
+		Tier:          "community",
+		SpecSource:    "sniffed",
+		AuthRequired:  &f,
+		ClientPattern: "proxy-envelope",
+	}
+	assert.NoError(t, entry.Validate())
+}
+
+func TestOptionalFieldsOmittedValid(t *testing.T) {
+	// spec_source, auth_required, and client_pattern should all be optional
+	entry := Entry{
+		Name:        "test-minimal",
+		DisplayName: "Minimal API",
+		Description: "A minimal catalog entry without new fields",
+		Category:    "developer-tools",
+		SpecURL:     "https://example.com/openapi.yaml",
+		SpecFormat:  "yaml",
+		Tier:        "official",
+	}
+	assert.NoError(t, entry.Validate())
+	assert.Empty(t, entry.SpecSource)
+	assert.Nil(t, entry.AuthRequired)
+	assert.Empty(t, entry.ClientPattern)
 }
 
 func TestPublicCategoriesExcludeExample(t *testing.T) {

@@ -192,6 +192,20 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				return printOutput(cmd.OutOrStdout(), json.RawMessage(envelopeJSON), true)
 			}
 {{- end}}
+{{- if or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD")}}
+			if wantsHumanTable(cmd.OutOrStdout(), flags) {
+				var items []map[string]any
+				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
+					if err := printAutoTable(cmd.OutOrStdout(), items); err != nil {
+						return err
+					}
+					if len(items) >= 25 {
+						fmt.Fprintf(os.Stderr, "\nShowing %d results. To narrow: add --limit, --json --select, or filter flags.\n", len(items))
+					}
+					return nil
+				}
+			}
+{{- end}}
 			return printOutputWithFlags(cmd.OutOrStdout(), data, flags)
 		},
 	}

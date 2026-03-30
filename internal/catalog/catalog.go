@@ -43,6 +43,19 @@ var validTiers = map[string]struct{}{
 	"community": {},
 }
 
+var validSpecSources = map[string]struct{}{
+	"official":  {}, // Published by API vendor (Stripe, GitHub, Discord)
+	"community": {}, // Third-party maintained (apis-guru, community OpenAPI repos)
+	"sniffed":   {}, // Reverse-engineered from browser traffic capture
+	"docs":      {}, // Generated from documentation pages (--docs mode)
+}
+
+var validClientPatterns = map[string]struct{}{
+	"rest":           {}, // Standard REST — default, no special client needed
+	"proxy-envelope": {}, // All requests wrapped in a POST envelope (e.g., Postman _api/ws/proxy)
+	"graphql":        {}, // GraphQL endpoint, needs query/mutation wrapper
+}
+
 type KnownAlt struct {
 	Name     string `yaml:"name"`
 	URL      string `yaml:"url"`
@@ -63,6 +76,14 @@ type Entry struct {
 	Notes             string     `yaml:"notes"`
 	KnownAlternatives []KnownAlt `yaml:"known_alternatives,omitempty"`
 	SandboxEndpoint   string     `yaml:"sandbox_endpoint,omitempty"`
+	// SpecSource describes how the spec was obtained. Empty defaults to "official".
+	// Values: official, community, sniffed, docs.
+	SpecSource string `yaml:"spec_source,omitempty"`
+	// AuthRequired indicates whether the API needs authentication. Empty means unknown.
+	AuthRequired *bool `yaml:"auth_required,omitempty"`
+	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
+	// Values: rest, proxy-envelope, graphql.
+	ClientPattern string `yaml:"client_pattern,omitempty"`
 }
 
 func ParseEntry(data []byte) (*Entry, error) {
@@ -162,6 +183,18 @@ func (e *Entry) Validate() error {
 	}
 	if _, ok := validTiers[e.Tier]; !ok {
 		return fmt.Errorf("tier must be one of: official, community")
+	}
+
+	if e.SpecSource != "" {
+		if _, ok := validSpecSources[e.SpecSource]; !ok {
+			return fmt.Errorf("spec_source must be one of: official, community, sniffed, docs")
+		}
+	}
+
+	if e.ClientPattern != "" {
+		if _, ok := validClientPatterns[e.ClientPattern]; !ok {
+			return fmt.Errorf("client_pattern must be one of: rest, proxy-envelope, graphql")
+		}
 	}
 
 	return nil

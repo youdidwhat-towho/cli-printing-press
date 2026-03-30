@@ -519,6 +519,35 @@ func suggestFlag(unknown string, cmd *cobra.Command) string {
 	return best
 }
 
+// wantsHumanTable returns true when output should be a human-friendly table.
+// Smart default: terminal=table, pipe=JSON.
+// - Human in terminal: isTerminal()=true → table
+// - Claude Code/Codex bash tool: stdout piped → JSON
+// - --json/--csv/--compact/--agent: machine format → JSON
+func wantsHumanTable(w io.Writer, flags *rootFlags) bool {
+	if flags.asJSON || flags.csv || flags.compact || flags.quiet || flags.plain {
+		return false
+	}
+	if flags.selectFields != "" {
+		return false
+	}
+	return isTerminal(w)
+}
+
+// formatCompact formats large numbers compactly (e.g., 1.2M, 728K).
+func formatCompact(n int64) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 10_000:
+		return fmt.Sprintf("%.0fK", float64(n)/1_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fK", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
+}
+
 func printAutoTable(w io.Writer, items []map[string]any) error {
 	if len(items) == 0 {
 		return nil
