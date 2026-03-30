@@ -31,6 +31,19 @@ type ReadmeSource struct {
 	Stars    int
 }
 
+// SyncResource carries per-resource sync metadata from the spec to the sync template.
+type SyncResource struct {
+	Name           string
+	Path           string // API path for this resource's list endpoint
+	PaginationType string // "cursor", "offset", "page_token", or "" (no pagination)
+	LimitParam     string // e.g., "limit", "per_page", "pageSize"
+	CursorParam    string // e.g., "after", "offset", "page_token"
+	NextCursorPath string // response field containing next cursor
+	HasMoreField   string // response field indicating more pages
+	ResponsePath   string // response field containing the data array (e.g., "data")
+	DefaultLimit   int    // default page size
+}
+
 type Generator struct {
 	Spec           *spec.APISpec
 	OutputDir      string
@@ -112,6 +125,54 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		Sources:        g.Sources,
 		DiscoveryPages: g.DiscoveryPages,
 	}
+}
+
+// buildSyncResources enriches the profiler's SyncableResources list with
+// per-resource pagination and response metadata extracted from the spec.
+func (g *Generator) buildSyncResources() []SyncResource {
+	if g.profile == nil || len(g.profile.SyncableResources) == 0 {
+		return nil
+	}
+
+	defaultLimit := g.profile.Pagination.DefaultPageSize
+	if defaultLimit == 0 {
+		defaultLimit = 100
+	}
+
+	var result []SyncResource
+	for _, name := range g.profile.SyncableResources {
+		sr := SyncResource{
+			Name:         name,
+			Path:         "/" + name,
+			DefaultLimit: defaultLimit,
+		}
+
+		resource, ok := g.Spec.Resources[name]
+		if !ok {
+			result = append(result, sr)
+			continue
+		}
+
+		// Find the list endpoint: a GET endpoint with Pagination != nil
+		for _, endpoint := range resource.Endpoints {
+			if strings.ToUpper(endpoint.Method) != "GET" || endpoint.Pagination == nil {
+				continue
+			}
+
+			sr.Path = endpoint.Path
+			sr.PaginationType = endpoint.Pagination.Type
+			sr.LimitParam = endpoint.Pagination.LimitParam
+			sr.CursorParam = endpoint.Pagination.CursorParam
+			sr.NextCursorPath = endpoint.Pagination.NextCursorPath
+			sr.HasMoreField = endpoint.Pagination.HasMoreField
+			sr.ResponsePath = endpoint.ResponsePath
+			break
+		}
+
+		result = append(result, sr)
+	}
+
+	return result
 }
 
 func (g *Generator) Generate() error {
@@ -288,6 +349,7 @@ func (g *Generator) Generate() error {
 		g.profile = profiler.Profile(g.Spec)
 	}
 	schema := BuildSchema(g.Spec)
+	syncResources := g.buildSyncResources()
 
 	// Create store directory if needed
 	if g.VisionSet.Store {
@@ -296,14 +358,14 @@ func (g *Generator) Generate() error {
 		}
 		storeData := struct {
 			*spec.APISpec
-			SyncableResources []string
-			SearchableFields  map[string][]string
-			Tables            []TableDef
+			SyncResources    []SyncResource
+			SearchableFields map[string][]string
+			Tables           []TableDef
 		}{
-			APISpec:           g.Spec,
-			SyncableResources: g.profile.SyncableResources,
-			SearchableFields:  g.profile.SearchableFields,
-			Tables:            schema,
+			APISpec:          g.Spec,
+			SyncResources:   syncResources,
+			SearchableFields: g.profile.SearchableFields,
+			Tables:           schema,
 		}
 		if err := g.renderTemplate("store.go.tmpl", filepath.Join("internal", "store", "store.go"), storeData); err != nil {
 			return fmt.Errorf("rendering store: %w", err)
@@ -322,14 +384,14 @@ func (g *Generator) Generate() error {
 
 	visionData := struct {
 		*spec.APISpec
-		SyncableResources []string
-		SearchableFields  map[string][]string
-		Tables            []TableDef
+		SyncResources    []SyncResource
+		SearchableFields map[string][]string
+		Tables           []TableDef
 	}{
-		APISpec:           g.Spec,
-		SyncableResources: g.profile.SyncableResources,
-		SearchableFields:  g.profile.SearchableFields,
-		Tables:            schema,
+		APISpec:          g.Spec,
+		SyncResources:   syncResources,
+		SearchableFields: g.profile.SearchableFields,
+		Tables:           schema,
 	}
 
 	for _, tmplName := range g.VisionSet.TemplateNames() {
@@ -353,12 +415,12 @@ func (g *Generator) Generate() error {
 	if g.VisionSet.Store {
 		workflowData := struct {
 			*spec.APISpec
-			SyncableResources []string
-			SearchableFields  map[string][]string
+			SyncResources    []SyncResource
+			SearchableFields map[string][]string
 		}{
-			APISpec:           g.Spec,
-			SyncableResources: g.profile.SyncableResources,
-			SearchableFields:  g.profile.SearchableFields,
+			APISpec:          g.Spec,
+			SyncResources:   syncResources,
+			SearchableFields: g.profile.SearchableFields,
 		}
 		if err := g.renderTemplate("channel_workflow.go.tmpl", filepath.Join("internal", "cli", "channel_workflow.go"), workflowData); err != nil {
 			return fmt.Errorf("rendering workflow: %w", err)
@@ -397,16 +459,16 @@ func (g *Generator) Generate() error {
 	if g.VisionSet.MCP {
 		mcpData := struct {
 			*spec.APISpec
-			SyncableResources []string
-			SearchableFields  map[string][]string
-			Tables            []TableDef
-			VisionSet         VisionTemplateSet
+			SyncResources    []SyncResource
+			SearchableFields map[string][]string
+			Tables           []TableDef
+			VisionSet        VisionTemplateSet
 		}{
-			APISpec:           g.Spec,
-			SyncableResources: g.profile.SyncableResources,
-			SearchableFields:  g.profile.SearchableFields,
-			Tables:            schema,
-			VisionSet:         g.VisionSet,
+			APISpec:          g.Spec,
+			SyncResources:   syncResources,
+			SearchableFields: g.profile.SearchableFields,
+			Tables:           schema,
+			VisionSet:        g.VisionSet,
 		}
 		if err := g.renderTemplate("mcp_tools.go.tmpl", filepath.Join("internal", "mcp", "tools.go"), mcpData); err != nil {
 			return fmt.Errorf("rendering MCP tools: %w", err)
