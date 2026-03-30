@@ -61,45 +61,69 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 			}
 			{{- end}}
 
-			// Check API connectivity
+			// Check API connectivity and validate credentials
 			if cfg != nil && cfg.BaseURL != "" {
 				httpClient := &http.Client{Timeout: 5 * time.Second}
+				baseURL := strings.TrimRight(cfg.BaseURL, "/")
 
-				// Health check: HEAD request to base URL
-				headReq, _ := http.NewRequest("HEAD", cfg.BaseURL, nil)
+				// Step 1: Basic reachability (unauthenticated HEAD)
+				headReq, _ := http.NewRequest("HEAD", baseURL, nil)
 				headResp, headErr := httpClient.Do(headReq)
-				if headErr != nil {
-					report["api_head"] = fmt.Sprintf("unreachable: %s", headErr)
-				} else {
+				apiReachable := false
+				if headErr == nil {
 					headResp.Body.Close()
-					report["api_head"] = fmt.Sprintf("HTTP %d", headResp.StatusCode)
+					apiReachable = true
 				}
 
-				// Health check: try common health endpoints
-				healthPaths := []string{"/health", "/healthz", "/status", "/ping", ""}
-				reached := false
-				for _, p := range healthPaths {
-					healthURL := strings.TrimRight(cfg.BaseURL, "/") + p
-					healthResp, healthErr := httpClient.Get(healthURL)
-					if healthErr != nil {
-						continue
-					}
-					healthResp.Body.Close()
-					if healthResp.StatusCode >= 200 && healthResp.StatusCode < 400 {
-						report["api"] = fmt.Sprintf("reachable (HTTP %d at %s)", healthResp.StatusCode, p)
-						reached = true
+				// If HEAD failed, try GET on common health endpoints
+				if !apiReachable {
+					for _, p := range []string{"/health", "/healthz", "/status", "/ping", ""} {
+						healthResp, healthErr := httpClient.Get(baseURL + p)
+						if healthErr != nil {
+							continue
+						}
+						healthResp.Body.Close()
+						apiReachable = true
 						break
 					}
 				}
 
-				if !reached {
-					// Fall back to GET on base URL
-					fallbackResp, fallbackErr := httpClient.Get(cfg.BaseURL)
-					if fallbackErr != nil {
-						report["api"] = fmt.Sprintf("unreachable: %s", fallbackErr)
+				if !apiReachable {
+					report["api"] = fmt.Sprintf("unreachable: %s", headErr)
+				} else {
+					report["api"] = "reachable"
+				}
+
+				// Step 2: Validate credentials with an authenticated request
+				authHeader := cfg.AuthHeader()
+				if authHeader == "" {
+					// No auth configured — skip credential validation
+				} else if !apiReachable {
+					report["credentials"] = "skipped (API unreachable)"
+				} else {
+					authReq, _ := http.NewRequest("GET", baseURL, nil)
+{{- if and .Auth .Auth.In (eq .Auth.In "query")}}
+					q := authReq.URL.Query()
+					q.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", authHeader)
+					authReq.URL.RawQuery = q.Encode()
+{{- else}}
+					authReq.Header.Set("{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", authHeader)
+{{- end}}
+					authReq.Header.Set("User-Agent", "{{.Name}}-pp-cli")
+					authResp, authErr := httpClient.Do(authReq)
+					if authErr != nil {
+						report["credentials"] = "error: could not reach API"
 					} else {
-						fallbackResp.Body.Close()
-						report["api"] = fmt.Sprintf("degraded (HTTP %d)", fallbackResp.StatusCode)
+						authResp.Body.Close()
+						switch {
+						case authResp.StatusCode >= 200 && authResp.StatusCode < 300:
+							report["credentials"] = "valid"
+						case authResp.StatusCode == 401 || authResp.StatusCode == 403:
+							report["credentials"] = fmt.Sprintf("invalid (HTTP %d) — check your credentials", authResp.StatusCode)
+						default:
+							// Non-auth HTTP error (404, 500, etc.) — don't blame credentials
+							report["credentials"] = fmt.Sprintf("ok (HTTP %d from base URL, but auth was accepted)", authResp.StatusCode)
+						}
 					}
 				}
 			} else if cfg != nil && cfg.BaseURL == "" {
@@ -118,6 +142,7 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				{"config", "Config"},
 				{"auth", "Auth"},
 				{"api", "API"},
+				{"credentials", "Credentials"},
 			}
 			for _, ck := range checkKeys {
 				v, ok := report[ck.key]
@@ -126,9 +151,9 @@ func newDoctorCmd(flags *rootFlags) *cobra.Command {
 				}
 				s := fmt.Sprintf("%v", v)
 				indicator := green("OK")
-				if strings.Contains(s, "error") || strings.Contains(s, "not configured") || strings.Contains(s, "unreachable") {
+				if strings.Contains(s, "error") || strings.Contains(s, "not configured") || strings.Contains(s, "unreachable") || strings.Contains(s, "invalid") {
 					indicator = red("FAIL")
-				} else if strings.Contains(s, "not ") {
+				} else if strings.Contains(s, "not ") || strings.Contains(s, "skipped") {
 					indicator = yellow("WARN")
 				}
 				fmt.Fprintf(w, "  %s %s: %s\n", indicator, ck.label, s)

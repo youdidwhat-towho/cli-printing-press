@@ -103,8 +103,31 @@ func classifyAPIError(err error) error {
 		// 409 Conflict = resource already exists. For agents retrying creates, this is success.
 		fmt.Fprintln(os.Stderr, "already exists (no-op)")
 		return nil
-	case strings.Contains(msg, "HTTP 401") || strings.Contains(msg, "HTTP 403"):
-		return authErr(fmt.Errorf("%w\nhint: check your API credentials. Run '{{.Name}}-pp-cli doctor' to verify auth, or set the required environment variable", err))
+	case strings.Contains(msg, "HTTP 401"):
+{{- if eq .Auth.Type "oauth2"}}
+		return authErr(fmt.Errorf("%w\nhint: your token may have expired. Re-run '{{.Name}}-pp-cli auth login' to re-authenticate", err))
+{{- else if eq .Auth.Type "bearer_token"}}
+		return authErr(fmt.Errorf("%w\nhint: check your token. Set it with: {{.Name}}-pp-cli auth set-token <token>"+
+{{- if .Auth.EnvVars}}
+			"\n      or: export {{index .Auth.EnvVars 0}}=your-token"+
+{{- end}}
+			"\n      verify setup: {{.Name}}-pp-cli doctor", err))
+{{- else if eq .Auth.Type "api_key"}}
+		return authErr(fmt.Errorf("%w\nhint: check your API key."+
+{{- if .Auth.EnvVars}}
+			" Set it with: export {{index .Auth.EnvVars 0}}=your-key"+
+{{- end}}
+			"\n      verify setup: {{.Name}}-pp-cli doctor", err))
+{{- else}}
+		return authErr(fmt.Errorf("%w\nhint: check your API credentials. Run '{{.Name}}-pp-cli doctor' to verify auth", err))
+{{- end}}
+	case strings.Contains(msg, "HTTP 403"):
+{{- if eq .Auth.Type "oauth2"}}
+		return authErr(fmt.Errorf("%w\nhint: permission denied. Your token may lack required scopes. Re-run '{{.Name}}-pp-cli auth login' to re-authorize", err))
+{{- else}}
+		return authErr(fmt.Errorf("%w\nhint: permission denied. Your credentials are valid but lack access to this resource."+
+			"\n      Check that your API key has the required permissions", err))
+{{- end}}
 	case strings.Contains(msg, "HTTP 404"):
 		return notFoundErr(fmt.Errorf("%w\nhint: resource not found. Run the 'list' command to see available items", err))
 	case strings.Contains(msg, "HTTP 429"):

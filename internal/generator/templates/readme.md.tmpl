@@ -22,18 +22,65 @@ Download from [Releases](https://github.com/{{.Owner}}/{{.Name}}-pp-cli/releases
 
 ## Quick Start
 
-```bash
+### 1. Install
+
+See [Install](#install) above.
+{{- if eq .Auth.Type "api_key"}}
+
+### 2. Set Up Credentials
+
+Get your API key from your API provider's developer portal. The key typically looks like a long alphanumeric string.
 {{- if .Auth.EnvVars}}
-# 1. Set your API credentials
+
+```bash
 export {{index .Auth.EnvVars 0}}="your-key-here"
+```
+
+You can also persist this in your config file at `{{.Config.Path}}`.
+{{- end}}
+{{- else if eq .Auth.Type "oauth2"}}
+
+### 2. Authenticate
+
+Authorize via your browser:
+
+```bash
+{{.Name}}-pp-cli auth login
+```
+
+This opens a browser window to complete the OAuth2 flow. Your tokens are stored locally and refreshed automatically.
+{{- else if eq .Auth.Type "bearer_token"}}
+
+### 2. Set Up Credentials
+
+Get your access token from your API provider's developer portal, then store it:
+
+```bash
+{{.Name}}-pp-cli auth set-token YOUR_TOKEN_HERE
+```
+{{- if .Auth.EnvVars}}
+
+Or set it via environment variable:
+
+```bash
+export {{index .Auth.EnvVars 0}}="your-token-here"
+```
+{{- end}}
 {{- end}}
 
-# {{if .Auth.EnvVars}}2{{else}}1{{end}}. Verify everything works
-{{.Name}}-pp-cli doctor
+### {{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}3{{else}}2{{end}}. Verify Setup
 
-# 3. Start using it
-{{- range $name, $resource := .Resources}}
-{{$.Name}}-pp-cli {{$name}} --help
+```bash
+{{.Name}}-pp-cli doctor
+```
+
+This checks your configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}} and credentials{{end}}.
+
+### {{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}4{{else}}3{{end}}. Try Your First Command
+
+```bash
+{{- range $name, $_ := .Resources}}
+{{$.Name}}-pp-cli {{$name}} list
 {{- break}}
 {{- end}}
 ```
