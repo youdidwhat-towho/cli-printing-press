@@ -130,8 +130,12 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 	}
 
 	endpointCount := 0
+	paramCount := 0
 	for _, resource := range apiSpec.Resources {
 		endpointCount += len(resource.Endpoints)
+		for _, ep := range resource.Endpoints {
+			paramCount += len(ep.Params)
+		}
 	}
 
 	tierCounts := make(map[string]int)
@@ -144,6 +148,7 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 			"spec_path":      outputPath,
 			"endpoints":      endpointCount,
 			"resources":      len(apiSpec.Resources),
+			"param_count":    paramCount,
 			"tier_breakdown": tierCounts,
 		})
 	}

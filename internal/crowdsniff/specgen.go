@@ -33,6 +33,25 @@ func BuildSpec(name, baseURL string, endpoints []AggregatedEndpoint) (*spec.APIS
 			},
 		}
 
+		// Map DiscoveredParam → spec.Param for each aggregated endpoint's params.
+		if ep.Params != nil {
+			specParams := make([]spec.Param, len(ep.Params))
+			for i, p := range ep.Params {
+				var defaultVal any
+				if p.Default != "" {
+					defaultVal = p.Default
+				}
+				specParams[i] = spec.Param{
+					Name:       p.Name,
+					Type:       p.Type,
+					Required:   p.Required,
+					Positional: false,
+					Default:    defaultVal,
+				}
+			}
+			endpoint.Params = specParams
+		}
+
 		resourceKey, resourceName := deriveResourceKey(ep.Path)
 		if resourceKey == "" {
 			resourceKey = "default"

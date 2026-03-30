@@ -354,6 +354,7 @@ func (s *NPMSource) processPackageTarball(ctx context.Context, tarballURL, pkgNa
 		}
 
 		endpoints, baseURLs := GrepEndpoints(string(content), pkgName, tier)
+		endpoints = EnrichWithParams(string(content), endpoints)
 		allEndpoints = append(allEndpoints, endpoints...)
 		allBaseURLs = append(allBaseURLs, baseURLs...)
 		return nil

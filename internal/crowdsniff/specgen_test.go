@@ -3,6 +3,7 @@ package crowdsniff
 import (
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/internal/spec"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -142,4 +143,160 @@ func TestResolveBaseURL(t *testing.T) {
 			assert.Equal(t, tt.want, ResolveBaseURL(tt.explicit, tt.candidates))
 		})
 	}
+}
+
+func TestBuildSpec_ParamMapping(t *testing.T) {
+	t.Parallel()
+
+	t.Run("aggregated endpoints with params produce spec.Endpoint.Params", func(t *testing.T) {
+		t.Parallel()
+
+		endpoints := []AggregatedEndpoint{
+			{
+				Method:      "GET",
+				Path:        "/v1/games",
+				SourceTier:  TierOfficialSDK,
+				SourceCount: 1,
+				Params: []DiscoveredParam{
+					{Name: "steamid", Type: "string", Required: true},
+					{Name: "include_appinfo", Type: "boolean", Required: false, Default: "true"},
+				},
+			},
+		}
+
+		apiSpec, err := BuildSpec("steam", "https://api.steampowered.com", endpoints)
+		require.NoError(t, err)
+
+		// Find the endpoint in the spec.
+		var found *spec.Endpoint
+		for _, resource := range apiSpec.Resources {
+			for _, ep := range resource.Endpoints {
+				if ep.Path == "/v1/games" {
+					e := ep
+					found = &e
+					break
+				}
+			}
+		}
+		require.NotNil(t, found, "expected to find endpoint with path /v1/games")
+		require.Len(t, found.Params, 2)
+
+		assert.Equal(t, "steamid", found.Params[0].Name)
+		assert.Equal(t, "string", found.Params[0].Type)
+		assert.True(t, found.Params[0].Required)
+		assert.False(t, found.Params[0].Positional)
+		assert.Equal(t, "", found.Params[0].Description)
+
+		assert.Equal(t, "include_appinfo", found.Params[1].Name)
+		assert.Equal(t, "boolean", found.Params[1].Type)
+		assert.False(t, found.Params[1].Required)
+		assert.Equal(t, "true", found.Params[1].Default)
+	})
+
+	t.Run("param type mapping preserves discovered type", func(t *testing.T) {
+		t.Parallel()
+
+		endpoints := []AggregatedEndpoint{
+			{
+				Method:      "GET",
+				Path:        "/v1/items",
+				SourceTier:  TierCommunitySDK,
+				SourceCount: 1,
+				Params: []DiscoveredParam{
+					{Name: "count", Type: "integer", Required: false, Default: "10"},
+					{Name: "active", Type: "boolean", Required: false},
+					{Name: "query", Type: "string", Required: false},
+				},
+			},
+		}
+
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		require.NoError(t, err)
+
+		var found *spec.Endpoint
+		for _, resource := range apiSpec.Resources {
+			for _, ep := range resource.Endpoints {
+				if ep.Path == "/v1/items" {
+					e := ep
+					found = &e
+					break
+				}
+			}
+		}
+		require.NotNil(t, found)
+		require.Len(t, found.Params, 3)
+
+		// Verify types are preserved from DiscoveredParam.
+		paramsByName := make(map[string]spec.Param)
+		for _, p := range found.Params {
+			paramsByName[p.Name] = p
+		}
+
+		assert.Equal(t, "integer", paramsByName["count"].Type)
+		assert.Equal(t, "10", paramsByName["count"].Default)
+		assert.Equal(t, "boolean", paramsByName["active"].Type)
+		assert.Equal(t, "string", paramsByName["query"].Type)
+	})
+
+	t.Run("nil params on aggregated endpoint produces nil spec params", func(t *testing.T) {
+		t.Parallel()
+
+		endpoints := []AggregatedEndpoint{
+			{
+				Method:      "GET",
+				Path:        "/v1/users",
+				SourceTier:  TierCodeSearch,
+				SourceCount: 1,
+				Params:      nil,
+			},
+		}
+
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		require.NoError(t, err)
+
+		for _, resource := range apiSpec.Resources {
+			for _, ep := range resource.Endpoints {
+				if ep.Path == "/v1/users" {
+					assert.Nil(t, ep.Params, "expected nil params when AggregatedEndpoint has nil params")
+				}
+			}
+		}
+	})
+
+	t.Run("mix of endpoints with and without params", func(t *testing.T) {
+		t.Parallel()
+
+		endpoints := []AggregatedEndpoint{
+			{
+				Method:      "GET",
+				Path:        "/v1/games",
+				SourceTier:  TierOfficialSDK,
+				SourceCount: 1,
+				Params: []DiscoveredParam{
+					{Name: "steamid", Type: "string", Required: true},
+				},
+			},
+			{
+				Method:      "GET",
+				Path:        "/v1/users",
+				SourceTier:  TierOfficialSDK,
+				SourceCount: 1,
+				Params:      nil, // no params
+			},
+		}
+
+		apiSpec, err := BuildSpec("test", "https://api.example.com", endpoints)
+		require.NoError(t, err)
+
+		for _, resource := range apiSpec.Resources {
+			for _, ep := range resource.Endpoints {
+				if ep.Path == "/v1/games" {
+					require.Len(t, ep.Params, 1)
+					assert.Equal(t, "steamid", ep.Params[0].Name)
+				}
+				// Endpoint without params will have nil Params, which
+				// serializes as `params: []` due to YAML tag lacking omitempty.
+			}
+		}
+	})
 }

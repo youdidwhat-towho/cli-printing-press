@@ -835,6 +835,78 @@ func TestNPMSource_RecencyCutoffFiltering(t *testing.T) {
 	})
 }
 
+func TestNPMSource_ProcessPackageTarball_WithParams(t *testing.T) {
+	t.Parallel()
+
+	t.Run("extracts endpoints with params from SDK code", func(t *testing.T) {
+		t.Parallel()
+
+		// Steam-like SDK content that has both endpoint paths and params objects.
+		sdkContent := `
+const BASE_URL = "https://api.steampowered.com";
+
+class SteamAPI {
+  getOwnedGames(steamid, { includeAppInfo = true } = {}) {
+    return this.get("/IPlayerService/GetOwnedGames/v1", {
+      steamid: steamid,
+      include_appinfo: includeAppInfo,
+      include_played_free_games: true
+    });
+  }
+
+  getRecentlyPlayed(steamid, count = 10) {
+    return this.get("/IPlayerService/GetRecentlyPlayedGames/v1", {
+      steamid,
+      count
+    });
+  }
+}
+`
+		tarball := buildTarball(t, map[string]string{
+			"package/src/client.js": sdkContent,
+		})
+
+		tarballServer := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Write(tarball)
+		}))
+		defer tarballServer.Close()
+
+		src := NewNPMSource(NPMOptions{
+			HTTPClient: tarballServer.Client(),
+		})
+
+		endpoints, baseURLs, err := src.processPackageTarball(
+			context.Background(),
+			tarballServer.URL+"/tarball.tgz",
+			"steam-sdk",
+			TierCommunitySDK,
+			500,
+		)
+
+		require.NoError(t, err)
+		assert.NotEmpty(t, endpoints, "expected endpoints to be extracted")
+		assert.Contains(t, baseURLs, "https://api.steampowered.com")
+
+		// Check that at least one endpoint has params populated.
+		var endpointWithParams *DiscoveredEndpoint
+		for i, ep := range endpoints {
+			if len(ep.Params) > 0 {
+				endpointWithParams = &endpoints[i]
+				break
+			}
+		}
+		require.NotNil(t, endpointWithParams, "expected at least one endpoint with params")
+
+		// Verify param names exist.
+		paramNames := make(map[string]bool)
+		for _, p := range endpointWithParams.Params {
+			paramNames[p.Name] = true
+		}
+		// Should have extracted some of the params from the object literal.
+		assert.True(t, len(paramNames) > 0, "expected at least one param name")
+	})
+}
+
 func TestNPMSource_MaxPackagesLimit(t *testing.T) {
 	t.Parallel()
 

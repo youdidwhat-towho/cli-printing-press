@@ -343,6 +343,90 @@ func TestDefaultCrowdSniffCachePath(t *testing.T) {
 	assert.Contains(t, path, "notion-spec.yaml")
 }
 
+func TestRunCrowdSniff_JSONOutput_IncludesParamCount(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	outputPath := filepath.Join(outputDir, "test-spec.yaml")
+	var stdout bytes.Buffer
+
+	opts := crowdSniffOptions{
+		sources: []crowdSniffSource{
+			&mockSource{result: endpointsResult("https://api.example.com",
+				crowdsniff.DiscoveredEndpoint{
+					Method:     "GET",
+					Path:       "/v1/games",
+					SourceTier: crowdsniff.TierOfficialSDK,
+					SourceName: "sdk",
+					Params: []crowdsniff.DiscoveredParam{
+						{Name: "steamid", Type: "string", Required: true},
+						{Name: "count", Type: "integer", Required: false},
+					},
+				},
+				crowdsniff.DiscoveredEndpoint{
+					Method:     "GET",
+					Path:       "/v1/users",
+					SourceTier: crowdsniff.TierOfficialSDK,
+					SourceName: "sdk",
+					Params: []crowdsniff.DiscoveredParam{
+						{Name: "limit", Type: "integer", Required: false},
+					},
+				},
+			)},
+		},
+		stdout: &stdout,
+		stderr: &bytes.Buffer{},
+	}
+
+	err := runCrowdSniff(context.Background(), "test", "https://api.example.com", outputPath, true, opts)
+	require.NoError(t, err)
+
+	var jsonOut map[string]interface{}
+	require.NoError(t, json.Unmarshal(stdout.Bytes(), &jsonOut))
+	// 2 params on first endpoint + 1 param on second endpoint = 3 total
+	assert.Equal(t, float64(3), jsonOut["param_count"], "expected param_count to be 3")
+}
+
+func TestRunCrowdSniff_ParamsInWrittenSpec(t *testing.T) {
+	t.Parallel()
+
+	outputDir := t.TempDir()
+	outputPath := filepath.Join(outputDir, "test-spec.yaml")
+
+	opts := crowdSniffOptions{
+		sources: []crowdSniffSource{
+			&mockSource{result: endpointsResult("https://api.example.com",
+				crowdsniff.DiscoveredEndpoint{
+					Method:     "GET",
+					Path:       "/v1/games",
+					SourceTier: crowdsniff.TierOfficialSDK,
+					SourceName: "sdk",
+					Params: []crowdsniff.DiscoveredParam{
+						{Name: "steamid", Type: "string", Required: true},
+						{Name: "include_appinfo", Type: "boolean", Required: false, Default: "true"},
+					},
+				},
+			)},
+		},
+		stdout: &bytes.Buffer{},
+		stderr: &bytes.Buffer{},
+	}
+
+	err := runCrowdSniff(context.Background(), "test", "https://api.example.com", outputPath, false, opts)
+	require.NoError(t, err)
+
+	// Read the written spec YAML and verify params are present.
+	data, err := os.ReadFile(outputPath)
+	require.NoError(t, err)
+	specContent := string(data)
+
+	assert.Contains(t, specContent, "params:")
+	assert.Contains(t, specContent, "name: steamid")
+	assert.Contains(t, specContent, "name: include_appinfo")
+	assert.Contains(t, specContent, "type: boolean")
+	assert.Contains(t, specContent, "required: true")
+}
+
 func TestIsHTTPS(t *testing.T) {
 	t.Parallel()
 
