@@ -131,6 +131,31 @@ builds:
 		assert.NotContains(t, string(updatedGR), "-X notion-pp-cli/internal/cli.version=")
 	})
 
+	t.Run("rewrites README go install path", func(t *testing.T) {
+		dir := t.TempDir()
+
+		gomod := "module notion-pp-cli\n\ngo 1.23\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "go.mod"), []byte(gomod), 0o644))
+
+		readme := "# notion-pp-cli\n\n## Install\n\n```\ngo install notion-pp-cli/cmd/notion-pp-cli@latest\n```\n\n```bash\nnotion-pp-cli doctor\nnotion-pp-cli users list\n```\n"
+		require.NoError(t, os.WriteFile(filepath.Join(dir, "README.md"), []byte(readme), 0o644))
+
+		err := RewriteModulePath(dir, "notion-pp-cli", "github.com/acme/library/notion-pp-cli")
+		require.NoError(t, err)
+
+		updatedReadme, err := os.ReadFile(filepath.Join(dir, "README.md"))
+		require.NoError(t, err)
+		content := string(updatedReadme)
+
+		// go install path should be rewritten
+		assert.Contains(t, content, "go install github.com/acme/library/notion-pp-cli/cmd/notion-pp-cli@latest")
+
+		// Bare CLI name in usage examples must NOT be rewritten
+		assert.Contains(t, content, "notion-pp-cli doctor")
+		assert.Contains(t, content, "notion-pp-cli users list")
+		assert.Contains(t, content, "# notion-pp-cli")
+	})
+
 	t.Run("noop when paths are equal", func(t *testing.T) {
 		dir := t.TempDir()
 		gomod := "module notion-pp-cli\n\ngo 1.23\n"

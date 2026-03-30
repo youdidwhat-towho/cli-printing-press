@@ -7,9 +7,9 @@ import (
 	"strings"
 )
 
-// rewriteExtensions lists file extensions that may contain Go import paths
-// or module-path references (e.g., goreleaser ldflags).
-var rewriteExtensions = []string{".go", ".yaml", ".yml"}
+// rewriteExtensions lists file extensions that may contain Go import paths,
+// module-path references (e.g., goreleaser ldflags), or install instructions.
+var rewriteExtensions = []string{".go", ".yaml", ".yml", ".md"}
 
 // RewriteModulePath replaces the Go module path in a CLI directory.
 // It rewrites the module declaration in go.mod and import paths
@@ -40,11 +40,13 @@ func RewriteModulePath(dir, oldPath, newPath string) error {
 		return fmt.Errorf("writing go.mod: %w", err)
 	}
 
-	// Only replace import-path references: oldPath/internal/...
+	// Only replace subpath references: oldPath/internal/... and oldPath/cmd/...
 	// This avoids corrupting command Use strings, User-Agent headers,
 	// config paths, and other runtime literals that contain the CLI name.
-	oldImport := oldPath + "/internal/"
-	newImport := newPath + "/internal/"
+	replacements := []struct{ old, new string }{
+		{oldPath + "/internal/", newPath + "/internal/"}, // Go imports, goreleaser ldflags
+		{oldPath + "/cmd/", newPath + "/cmd/"},           // go install paths in README
+	}
 
 	return filepath.WalkDir(dir, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
@@ -63,12 +65,15 @@ func RewriteModulePath(dir, oldPath, newPath string) error {
 			return fmt.Errorf("reading %s: %w", path, err)
 		}
 
-		replaced := strings.ReplaceAll(string(content), oldImport, newImport)
-		if replaced == string(content) {
+		result := string(content)
+		for _, r := range replacements {
+			result = strings.ReplaceAll(result, r.old, r.new)
+		}
+		if result == string(content) {
 			return nil // no changes needed
 		}
 
-		return os.WriteFile(path, []byte(replaced), 0o644)
+		return os.WriteFile(path, []byte(result), 0o644)
 	})
 }
 
