@@ -155,6 +155,22 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 
 {{- if not (or (eq .Endpoint.Method "GET") (eq .Endpoint.Method "HEAD"))}}
+			if wantsHumanTable(cmd.OutOrStdout(), flags) {
+				// Check if response contains an array (directly or wrapped in "data")
+				var items []map[string]any
+				if json.Unmarshal(data, &items) == nil && len(items) > 0 {
+					if err := printAutoTable(cmd.OutOrStdout(), items); err == nil {
+						return nil
+					}
+				} else {
+					var wrapped struct{ Data []map[string]any `json:"data"` }
+					if json.Unmarshal(data, &wrapped) == nil && len(wrapped.Data) > 0 {
+						if err := printAutoTable(cmd.OutOrStdout(), wrapped.Data); err == nil {
+							return nil
+						}
+					}
+				}
+			}
 			if flags.asJSON || !isTerminal(cmd.OutOrStdout()) {
 				if flags.quiet {
 					return nil
