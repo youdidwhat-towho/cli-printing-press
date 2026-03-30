@@ -286,6 +286,71 @@ func TestCleanSpecName(t *testing.T) {
 	}
 }
 
+func TestParseProxyEnvelopeExtensions(t *testing.T) {
+	t.Parallel()
+
+	t.Run("extracts x-client-pattern and x-proxy-routes", func(t *testing.T) {
+		spec := []byte(`
+openapi: "3.0.0"
+info:
+  title: Proxy API
+  version: "1.0"
+  x-client-pattern: proxy-envelope
+  x-proxy-routes:
+    /search-all: search
+    /v1/api: publishing
+    /v2/api: publishing
+servers:
+  - url: https://example.com/proxy
+paths:
+  /search-all:
+    post:
+      operationId: searchAll
+      responses:
+        "200":
+          description: OK
+  /v1/api/items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(spec)
+		require.NoError(t, err)
+
+		assert.Equal(t, "proxy-envelope", parsed.ClientPattern)
+		require.NotNil(t, parsed.ProxyRoutes)
+		assert.Equal(t, "search", parsed.ProxyRoutes["/search-all"])
+		assert.Equal(t, "publishing", parsed.ProxyRoutes["/v1/api"])
+		assert.Equal(t, "publishing", parsed.ProxyRoutes["/v2/api"])
+		assert.Len(t, parsed.ProxyRoutes, 3)
+	})
+
+	t.Run("absent extensions leave fields empty", func(t *testing.T) {
+		spec := []byte(`
+openapi: "3.0.0"
+info:
+  title: Plain API
+  version: "1.0"
+servers:
+  - url: https://api.example.com
+paths:
+  /items:
+    get:
+      operationId: listItems
+      responses:
+        "200":
+          description: OK
+`)
+		parsed, err := Parse(spec)
+		require.NoError(t, err)
+
+		assert.Empty(t, parsed.ClientPattern)
+		assert.Nil(t, parsed.ProxyRoutes)
+	})
+}
+
 func TestHumanizeDescription(t *testing.T) {
 	tests := []struct {
 		input string

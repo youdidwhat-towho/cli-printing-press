@@ -165,6 +165,16 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 		}
 	}
 
+	// Extract x-client-pattern extension (rest, proxy-envelope)
+	var clientPattern string
+	if doc.Info != nil && doc.Info.Extensions != nil {
+		if raw, ok := doc.Info.Extensions["x-client-pattern"]; ok {
+			if s, ok := raw.(string); ok {
+				clientPattern = s
+			}
+		}
+	}
+
 	baseURL := ""
 	basePath := ""
 	if len(doc.Servers) > 0 && doc.Servers[0] != nil {
@@ -208,13 +218,14 @@ func parse(data []byte, lenient bool) (*spec.APISpec, error) {
 	}
 
 	result := &spec.APISpec{
-		Name:        name,
-		Description: description,
-		Version:     version,
-		BaseURL:     baseURL,
-		BasePath:    basePath,
-		ProxyRoutes: proxyRoutes,
-		Auth:        mapAuth(doc, name),
+		Name:          name,
+		Description:   description,
+		Version:       version,
+		BaseURL:       baseURL,
+		BasePath:      basePath,
+		ClientPattern: clientPattern,
+		ProxyRoutes:   proxyRoutes,
+		Auth:          mapAuth(doc, name),
 		Config: spec.ConfigSpec{
 			Format: "toml",
 			Path:   fmt.Sprintf("~/.config/%s-pp-cli/config.toml", name),

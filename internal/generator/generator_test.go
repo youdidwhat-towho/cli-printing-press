@@ -457,3 +457,252 @@ func TestGeneratedOutput_GetCommandsLackEnvelope(t *testing.T) {
 	assert.NotContains(t, content, "envelope")
 	assert.NotContains(t, content, "statusCode")
 }
+
+// --- Unit 2: Proxy Route Data Propagation Tests ---
+
+func TestGeneratedOutput_ProxyEnvelopeRouting(t *testing.T) {
+	t.Parallel()
+
+	t.Run("proxy-envelope with routes emits serviceForPath routing", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := &spec.APISpec{
+			Name:          "proxyapi",
+			Version:       "0.1.0",
+			BaseURL:       "https://example.com/proxy",
+			ClientPattern: "proxy-envelope",
+			ProxyRoutes: map[string]string{
+				"/search-all": "search",
+				"/v1/api":     "publishing",
+				"/v2/api":     "publishing",
+			},
+			Auth: spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PROXY_API_KEY"}},
+			Config: spec.ConfigSpec{
+				Format: "toml",
+				Path:   "~/.config/proxyapi-pp-cli/config.toml",
+			},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/v1/api/items", Description: "List items"},
+					},
+				},
+				"search": {
+					Description: "Search",
+					Endpoints: map[string]spec.Endpoint{
+						"all": {Method: "POST", Path: "/search-all", Description: "Search all"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "proxyapi-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+		require.NoError(t, err)
+		content := string(clientGo)
+
+		// Proxy-envelope template should be active
+		assert.Contains(t, content, "proxyEnvelope")
+		assert.Contains(t, content, "serviceForPath")
+
+		// Route table should contain the configured prefixes
+		assert.Contains(t, content, `"/search-all": "search"`)
+		assert.Contains(t, content, `"/v1/api": "publishing"`)
+		assert.Contains(t, content, `"/v2/api": "publishing"`)
+
+		// Default fallback uses API name
+		assert.Contains(t, content, `return "proxyapi"`)
+	})
+
+	t.Run("proxy-envelope without routes falls back to API name", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := &spec.APISpec{
+			Name:          "proxybare",
+			Version:       "0.1.0",
+			BaseURL:       "https://example.com/proxy",
+			ClientPattern: "proxy-envelope",
+			// ProxyRoutes intentionally nil
+			Auth: spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"PROXY_API_KEY"}},
+			Config: spec.ConfigSpec{
+				Format: "toml",
+				Path:   "~/.config/proxybare-pp-cli/config.toml",
+			},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "proxybare-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+		require.NoError(t, err)
+		content := string(clientGo)
+
+		// Proxy-envelope template should still be active
+		assert.Contains(t, content, "proxyEnvelope")
+		assert.Contains(t, content, "serviceForPath")
+
+		// No route table entries (nil map range produces nothing)
+		assert.NotContains(t, content, `bestMatch`)
+
+		// Default fallback uses API name
+		assert.Contains(t, content, `return "proxybare"`)
+	})
+
+	t.Run("standard REST spec omits proxy-envelope code", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := &spec.APISpec{
+			Name:    "restapi",
+			Version: "0.1.0",
+			BaseURL: "https://api.example.com",
+			// ClientPattern empty = default REST
+			Auth: spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"REST_API_KEY"}},
+			Config: spec.ConfigSpec{
+				Format: "toml",
+				Path:   "~/.config/restapi-pp-cli/config.toml",
+			},
+			Resources: map[string]spec.Resource{
+				"items": {
+					Description: "Items",
+					Endpoints: map[string]spec.Endpoint{
+						"list": {Method: "GET", Path: "/items", Description: "List items"},
+					},
+				},
+			},
+		}
+
+		outputDir := filepath.Join(t.TempDir(), "restapi-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		clientGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "client", "client.go"))
+		require.NoError(t, err)
+		content := string(clientGo)
+
+		// Standard REST client should NOT contain proxy-envelope constructs
+		assert.NotContains(t, content, "proxyEnvelope")
+		assert.NotContains(t, content, "serviceForPath")
+		assert.NotContains(t, content, "buildProxyPath")
+	})
+}
+
+// --- Unit 5: UpsertBatch Entity Method Tests ---
+
+// highGravitySpec builds an APISpec with a high-gravity "collections" resource
+// (gravity >= 8) that triggers per-entity batch method generation, plus a
+// low-gravity "tags" resource that should NOT get a batch method.
+func highGravitySpec() *spec.APISpec {
+	return &spec.APISpec{
+		Name:    "batchtest",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"BATCH_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/batchtest-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"collections": {
+				Description: "Manage collections",
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/collections", Description: "List collections", Params: highGravityParams()},
+					"get":    {Method: "GET", Path: "/collections/{id}", Description: "Get collection", Params: highGravityParams()},
+					"create": {Method: "POST", Path: "/collections", Description: "Create collection", Body: highGravityParams()},
+					"update": {Method: "PUT", Path: "/collections/{id}", Description: "Update collection", Body: highGravityParams()},
+					"delete": {Method: "DELETE", Path: "/collections/{id}", Description: "Delete collection"},
+				},
+			},
+			"tags": {
+				Description: "Manage tags",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/tags", Description: "List tags"},
+				},
+			},
+		},
+	}
+}
+
+func highGravityParams() []spec.Param {
+	return []spec.Param{
+		{Name: "name", Type: "string"},
+		{Name: "title", Type: "string"},
+		{Name: "description", Type: "string"},
+		{Name: "content", Type: "string"},
+		{Name: "status", Type: "string"},
+		{Name: "workspace_id", Type: "string"},
+		{Name: "owner_id", Type: "string"},
+		{Name: "created_at", Type: "string", Format: "date-time"},
+		{Name: "updated_at", Type: "string", Format: "date-time"},
+		{Name: "item_count", Type: "integer"},
+	}
+}
+
+func TestGeneratedOutput_UpsertBatchEntityMethods(t *testing.T) {
+	t.Parallel()
+
+	t.Run("high-gravity entity gets UpsertBatch method", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := highGravitySpec()
+		outputDir := filepath.Join(t.TempDir(), "batchtest-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+		require.NoError(t, err)
+		content := string(storeGo)
+
+		// High-gravity entity should have a typed batch method
+		assert.Contains(t, content, "func (s *Store) UpsertBatchCollections(items []json.RawMessage) (int, error)")
+
+		// Batch method should use typed INSERT into the entity table
+		assert.Contains(t, content, "INSERT INTO collections")
+
+		// Batch method should also upsert into generic resources table
+		assert.Contains(t, content, `upsertGenericResourceTx(tx, "collections"`)
+
+		// Batch method should return count
+		assert.Contains(t, content, "return count, nil")
+
+		// Generic UpsertBatch should still exist
+		assert.Contains(t, content, "func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) error")
+	})
+
+	t.Run("low-gravity entity does not get UpsertBatch method", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := highGravitySpec()
+		outputDir := filepath.Join(t.TempDir(), "batchtest-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		storeGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "store", "store.go"))
+		require.NoError(t, err)
+		content := string(storeGo)
+
+		// Low-gravity "tags" entity should NOT have a typed batch method
+		assert.NotContains(t, content, "UpsertBatchTags")
+	})
+
+	t.Run("batch method compiles for high-gravity spec", func(t *testing.T) {
+		t.Parallel()
+
+		apiSpec := highGravitySpec()
+		outputDir := filepath.Join(t.TempDir(), "batchtest-pp-cli")
+		gen := New(apiSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		runGoCommand(t, outputDir, "mod", "tidy")
+		runGoCommand(t, outputDir, "build", "./...")
+	})
+}

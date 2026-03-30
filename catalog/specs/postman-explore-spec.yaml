@@ -10,6 +10,11 @@ info:
   version: "1.0.0"
   contact:
     name: Postman Explore (Community)
+  x-client-pattern: proxy-envelope
+  x-proxy-routes:
+    /search-all: search
+    /v1/api: publishing
+    /v2/api: publishing
 
 servers:
   - url: https://www.postman.com/_api/ws/proxy
