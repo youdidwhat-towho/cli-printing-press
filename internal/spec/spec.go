@@ -54,8 +54,9 @@ type Endpoint struct {
 	Body         []Param     `yaml:"body"`
 	Response     ResponseDef `yaml:"response"`
 	Pagination   *Pagination `yaml:"pagination"`
-	ResponsePath string      `yaml:"response_path,omitempty"` // path to extract data array from response (e.g., "data", "results.items")
-	Alias        string      `yaml:"-"`                       // computed, not from YAML
+	ResponsePath string            `yaml:"response_path,omitempty"` // path to extract data array from response (e.g., "data", "results.items")
+	Meta         map[string]string `yaml:"meta,omitempty"`          // per-endpoint metadata (e.g., source_tier, source_count from crowd-sniff)
+	Alias        string            `yaml:"-"`                       // computed, not from YAML
 }
 
 type Param struct {

@@ -5,6 +5,7 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestParseStytch(t *testing.T) {
@@ -125,4 +126,75 @@ func TestNewFields(t *testing.T) {
 	assert.Equal(t, "email", endpoint.Params[0].Format)
 	assert.Equal(t, "ApiKeyAuth", s.Auth.Scheme)
 	assert.Equal(t, "header", s.Auth.In)
+}
+
+func TestEndpointMeta(t *testing.T) {
+	t.Parallel()
+
+	t.Run("parse YAML with meta populated", func(t *testing.T) {
+		t.Parallel()
+		input := `
+name: test
+base_url: http://x
+resources:
+  users:
+    description: Users
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        meta:
+          source_tier: official-sdk
+          source_count: "2"
+`
+		var s APISpec
+		require.NoError(t, yaml.Unmarshal([]byte(input), &s))
+		require.NoError(t, s.Validate())
+		ep := s.Resources["users"].Endpoints["list"]
+		assert.Equal(t, "official-sdk", ep.Meta["source_tier"])
+		assert.Equal(t, "2", ep.Meta["source_count"])
+	})
+
+	t.Run("parse YAML without meta field", func(t *testing.T) {
+		t.Parallel()
+		input := `
+name: test
+base_url: http://x
+resources:
+  users:
+    description: Users
+    endpoints:
+      list:
+        method: GET
+        path: /users
+`
+		var s APISpec
+		require.NoError(t, yaml.Unmarshal([]byte(input), &s))
+		ep := s.Resources["users"].Endpoints["list"]
+		assert.Nil(t, ep.Meta)
+	})
+
+	t.Run("marshal with meta set includes meta section", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{
+			Method: "GET",
+			Path:   "/users",
+			Meta:   map[string]string{"source_tier": "code-search"},
+		}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.Contains(t, string(data), "meta:")
+		assert.Contains(t, string(data), "source_tier: code-search")
+	})
+
+	t.Run("marshal with nil meta omits meta section", func(t *testing.T) {
+		t.Parallel()
+		ep := Endpoint{
+			Method: "GET",
+			Path:   "/users",
+		}
+		data, err := yaml.Marshal(ep)
+		require.NoError(t, err)
+		assert.NotContains(t, string(data), "meta")
+	})
 }
