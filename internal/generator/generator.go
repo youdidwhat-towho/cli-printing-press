@@ -4,9 +4,9 @@ import (
 	"embed"
 	"fmt"
 	"os"
-	"sort"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"text/template"
@@ -380,7 +380,7 @@ func (g *Generator) Generate() error {
 			Tables           []TableDef
 		}{
 			APISpec:          g.Spec,
-			SyncResources:   syncResources,
+			SyncResources:    syncResources,
 			SearchableFields: g.profile.SearchableFields,
 			Tables:           schema,
 		}
@@ -406,7 +406,7 @@ func (g *Generator) Generate() error {
 		Tables           []TableDef
 	}{
 		APISpec:          g.Spec,
-		SyncResources:   syncResources,
+		SyncResources:    syncResources,
 		SearchableFields: g.profile.SearchableFields,
 		Tables:           schema,
 	}
@@ -436,7 +436,7 @@ func (g *Generator) Generate() error {
 			SearchableFields map[string][]string
 		}{
 			APISpec:          g.Spec,
-			SyncResources:   syncResources,
+			SyncResources:    syncResources,
 			SearchableFields: g.profile.SearchableFields,
 		}
 		if err := g.renderTemplate("channel_workflow.go.tmpl", filepath.Join("internal", "cli", "channel_workflow.go"), workflowData); err != nil {
@@ -482,7 +482,7 @@ func (g *Generator) Generate() error {
 			VisionSet        VisionTemplateSet
 		}{
 			APISpec:          g.Spec,
-			SyncResources:   syncResources,
+			SyncResources:    syncResources,
 			SearchableFields: g.profile.SearchableFields,
 			Tables:           schema,
 			VisionSet:        g.VisionSet,

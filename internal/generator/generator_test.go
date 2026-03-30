@@ -778,8 +778,8 @@ func TestBuildSyncResources(t *testing.T) {
 								Method: "GET",
 								Path:   "/v1/api/networkentity",
 								Pagination: &spec.Pagination{
-									Type:       "offset",
-									LimitParam: "limit",
+									Type:        "offset",
+									LimitParam:  "limit",
 									CursorParam: "offset",
 								},
 								ResponsePath: "data",
@@ -848,7 +848,7 @@ func TestBuildSyncResources(t *testing.T) {
 								Method: "GET",
 								Path:   "/items/archived",
 								Pagination: &spec.Pagination{
-									Type:       "cursor",
+									Type:        "cursor",
 									CursorParam: "after",
 								},
 							},
@@ -888,7 +888,7 @@ func TestBuildSyncResources(t *testing.T) {
 			},
 			profile: &profiler.APIProfile{
 				SyncableResources: []string{"items"},
-				Pagination: profiler.PaginationProfile{DefaultPageSize: 50},
+				Pagination:        profiler.PaginationProfile{DefaultPageSize: 50},
 			},
 		}
 		result := g.buildSyncResources()
@@ -905,7 +905,7 @@ func TestBuildSyncResources(t *testing.T) {
 						Endpoints: map[string]spec.Endpoint{
 							"list": {
 								Method: "GET", Path: "/collections",
-								Pagination: &spec.Pagination{Type: "offset", LimitParam: "limit", CursorParam: "offset"},
+								Pagination:   &spec.Pagination{Type: "offset", LimitParam: "limit", CursorParam: "offset"},
 								ResponsePath: "data",
 							},
 						},
