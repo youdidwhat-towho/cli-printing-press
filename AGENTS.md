@@ -30,25 +30,36 @@ A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push h
 
 Key terms used throughout this repo. Several have overloaded meanings — the glossary establishes canonical names to use in conversation and code comments.
 
-**When talking about work, use the canonical term** (bold in the table) so intent is unambiguous. If the user says something ambiguous — like "publish it" when it's unclear whether they mean the pipeline step or pushing to the public library repo — ask before acting. A quick clarifying question costs seconds; the wrong action costs a re-run.
+**Use the canonical term** (left column) in your own responses so intent stays unambiguous. If the user's phrasing is ambiguous and the distinction affects what action to take — e.g., "publish it" could mean the pipeline step or pushing to the public library repo — ask before acting.
 
 | Canonical term | Meaning |
 |----------------|---------|
 | **the printing press** / **the machine** | This repo's generator system — the Go binary, templates, skills, and catalog that together produce CLIs. |
-| **printed CLI** / **`<api>-pp-cli`** | A CLI produced by the printing press (e.g., `notion-pp-cli`). The `-pp-` infix avoids collisions with official vendor CLIs. When someone says "the CLI" without qualification, they almost always mean a printed CLI. Use "printed CLI" in your own responses to keep it clear. |
+| **printed CLI** / **`<api>-pp-cli`** | A CLI produced by the printing press (e.g., `notion-pp-cli`). The `-pp-` infix avoids collisions with official vendor CLIs. When someone says "the CLI" without qualification, they almost always mean a printed CLI. Use "printed CLI" in your responses to keep it clear. |
 | **the printing-press binary** | The Go binary built from `cmd/printing-press/`. Commands: `generate`, `verify`, `emboss`, `scorecard`, `publish`, etc. Always say "printing-press binary" or "generator binary" — never just "the CLI" — when referring to this. |
-| **emboss** | A second-pass improvement cycle for an already-printed CLI. Audits the baseline, re-researches, identifies top improvements, rebuilds, re-verifies, and reports the delta. Subcommand: `printing-press emboss <api>`. Still active — not deprecated. |
+| **spec** | The API contract that drives generation — OpenAPI 3.0+ YAML/JSON, GraphQL SDL, or internal YAML format. Can come from catalog, URL, local file, or sniff discovery. |
+| **API slug** | Normalized API name derived from the spec title via `cleanSpecName()`. Directory key in manuscripts (`manuscripts/<api-slug>/`). The CLI name is `<api-slug>-pp-cli`. Distinct from the CLI name — don't use them interchangeably. |
+| **research (pipeline)** | Phase 1 of the machine: builds a brief answering "what is this API, who uses it, and why?" Distinct from a general instruction to investigate something. When the user says "research X," ask whether they mean kick off the machine's research phase or just look into something. |
+| **brief** | The Phase 1 output — a condensed research doc covering API identity, competitors, data layer, and product thesis. Stored in `manuscripts/<api>/<run>/research/`. Drives all downstream decisions. |
+| **crowd sniff** / **sniff** | Discovery technique that scrapes npm, PyPI, and GitHub for unofficial API clients to learn undocumented endpoints, auth patterns, and rate limits. Produces a `discovery/` manuscript with sniff-report.md, HAR captures, and unique-paths.txt. Used when no official spec exists or to supplement one. |
+| **manuscript** | The full archive of a generation run. Contains three subdirectories: `research/` (briefs, spec analysis), `proofs/` (dogfood, verify, scorecard results), and optionally `discovery/` (sniff artifacts). Stored at `~/printing-press/manuscripts/<api-slug>/<run-id>/`. |
+| **emboss** | A second-pass improvement cycle for an already-printed CLI. Audits baseline, re-researches, identifies top improvements, rebuilds, re-verifies, reports delta. Subcommand: `printing-press emboss <api>`. Still active — not deprecated. |
 | **polish** | Targeted fix-up of a printed CLI (distinct from emboss's full cycle). Skill: `/printing-press-polish`. The retro improves the machine; polish improves the printed CLI. |
 | **retro** / **retrospective** | Post-generation analysis of *the machine itself* — not the printed CLI. Identifies systemic improvements to templates, the Go binary, skill instructions, or catalog. Output goes to `docs/retros/` and `manuscripts/<api>/<run>/proofs/`. |
-| **scorecard** / **scoring** | Two-tier quality assessment of a printed CLI. Tier 1: infrastructure (12 dimensions, 60 pts). Tier 2: domain correctness (6 dimensions, 40 pts). Total /100 with letter grades. Subcommand: `printing-press scorecard`. |
-| **manuscript** | The full archive of a generation run — research briefs, spec analysis, verification proofs, discovery logs, and retro findings. Stored at `~/printing-press/manuscripts/<api-slug>/<run-id>/`. |
-| **local library** | `~/printing-press/library/<cli-name>/` — where printed CLIs land after a successful run. This is a local directory, not a git repo. |
-| **public library repo** | The GitHub repo [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) — the public catalog of finished CLIs organized by category. The `/printing-press-publish` skill pushes a local library CLI here. |
-| **publish (pipeline)** | The generator pipeline step that moves a working CLI into the local library and writes the `.printing-press.json` provenance manifest. |
+| **quality gates** | 7 mechanical static checks every printed CLI must pass: go mod tidy, go vet, go build, binary build, `--help`, version, doctor. These are build-time checks — see **verify** for runtime testing. |
+| **verify** | Runtime behavioral testing of a printed CLI — runs every command against the real API (read-only) or a mock server. Produces PASS/WARN/FAIL verdicts. Has `--fix` mode for auto-patching. Distinct from quality gates (static) and dogfood (structural). |
+| **dogfood** | Generation-time structural validation of a printed CLI against its source spec. Catches dead flags, invalid API paths, auth mismatches. Subcommand: `printing-press dogfood`. Compare with **doctor** (shipped in the CLI for end-users) and **verify** (runtime behavioral). |
+| **shipcheck** | The three-part verification block that gates publishing: dogfood + verify + scorecard, run together. All three must pass before a printed CLI ships. |
+| **scorecard** / **scoring** | Two-tier quality assessment. Tier 1: infrastructure (12 dimensions, 60 pts). Tier 2: domain correctness (6 dimensions, 40 pts). Total /100 with letter grades. Subcommand: `printing-press scorecard`. |
+| **doctor** | Self-diagnostic command shipped inside every printed CLI for end-users to run. Checks environment, auth config, and connectivity at the user's runtime. Unlike dogfood (which validates at generation time), doctor runs post-install. |
+| **local library** | `~/printing-press/library/<cli-name>/` — where printed CLIs land after a successful run. Local directory, not a git repo. |
+| **public library repo** | The GitHub repo [`mvanhorn/printing-press-library`](https://github.com/mvanhorn/printing-press-library) — public catalog of finished CLIs organized by category. `/printing-press-publish` pushes here. |
+| **publish (pipeline)** | The pipeline step that moves a working CLI into the local library and writes the `.printing-press.json` provenance manifest. |
 | **publish (to public library repo)** | The skill-driven workflow (`/printing-press-publish`) that packages a local library CLI and creates a PR in the public library repo. |
-| **quality gates** | The 7 automated checks every printed CLI must pass: go mod tidy, go vet, go build, binary build, `--help`, version, doctor. |
-| **catalog** | The embedded YAML entries in `catalog/` that describe available APIs (name, spec URL, category, tier). Baked into the binary at build time via `catalog.FS`. |
-| **crowd sniff** / **sniff** | Discovery technique that scrapes npm, PyPI, and GitHub for unofficial API clients to learn undocumented endpoints, auth patterns, and rate limits. |
+| **provenance** / **`.printing-press.json`** | Manifest written to each published CLI's root. Contains generation metadata: spec URL, checksum, run ID, printing-press version, timestamp. Makes the directory self-describing. |
+| **catalog** | Embedded YAML entries in `catalog/` describing available APIs (name, spec URL, category, tier). Baked into the binary at build time via `catalog.FS`. |
+| **tier** | Catalog classification: `official` (vendor-maintained spec) or `community` (unofficial/reverse-engineered). Affects risk expectations. |
+| **runstate** | Mutable per-workspace state at `~/printing-press/.runstate/<scope>/`. Tracks current run and sync cursors. Distinct from manuscripts, which are immutable archives. |
 
 ## Commit Style
 
