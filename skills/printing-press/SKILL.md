@@ -92,7 +92,7 @@ See the `printing-press-polish` skill for details. It runs diagnostics, fixes ve
 
 ## Setup
 
-Before any user-facing output, read [references/voice.md](references/voice.md) and apply its voice guidelines throughout the session.
+Read and apply [references/voice.md](references/voice.md) for this session.
 
 Before doing anything else:
 
