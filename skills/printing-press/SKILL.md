@@ -802,6 +802,30 @@ Run these searches in parallel:
 9. **WebSearch**: `"<API name>" SDK wrapper site:npmjs.com`
 10. **WebSearch**: `"<API name>" client library site:pypi.org`
 
+### Step 1.5a.5: Read MCP source code (if found)
+
+If step 1.5a discovered MCP server repos with public source code on GitHub, read the actual source to extract ground-truth API usage — not just README feature descriptions.
+
+**Time budget:** Max 3 minutes total. If extraction is unproductive, fall back to README-only research.
+
+**For the top 1-2 MCP repos found:**
+
+1. **Identify the main source file.** WebFetch the repo root to find the entry point — typically `src/index.ts`, `server.ts`, `server.py`, `main.go`, or a `tools/` directory. MCP servers are usually small (one main file + tool definitions).
+
+2. **Extract three things:**
+   - **API endpoint paths**: Look for HTTP client calls (`fetch(`, `axios.`, `requests.`, `http.Get`, `client.`) and extract the URL paths (e.g., `GET /v1/issues`, `POST /graphql`). These are the endpoints the MCP maintainer proved work.
+   - **Auth patterns**: Look for how the MCP constructs auth headers — token format (`Bearer`, `Bot`, `Basic`), header name (`Authorization`, `X-API-Key`), environment variable names. This informs our auth setup guidance.
+   - **Response field selections**: Look for which fields are extracted from API responses — these are the high-gravity fields that power users actually need.
+
+3. **Feed into absorb manifest.** In step 1.5b, endpoints extracted from source get attributed as `<MCP name> (source)` in the "Best Source" column, distinguishing them from README-derived features. Source-extracted endpoints are high-confidence signals — the maintainer verified they work.
+
+4. **Feed auth patterns into research brief.** If the MCP source reveals token format (e.g., `xoxp-` for Slack, `sk_live_` for Stripe), credential setup steps, or required scopes, note them in the Phase 1 brief's auth section. These hints improve the generated CLI's auth onboarding.
+
+**Skip this step when:**
+- No MCP repos were found in 1.5a
+- MCP repos are private or archived
+- The MCP is a monorepo where the relevant server is hard to locate within 3 minutes
+
 ### Step 1.5b: Catalog every feature into the absorb manifest
 
 For EACH tool found, list EVERY feature/tool/command it provides. Then define how our CLI matches AND beats it:
