@@ -124,7 +124,7 @@ func TestREADMEOutputContract(t *testing.T) {
 	assert.Contains(t, readme, "~/printing-press/.runstate/<scope>/runs/<run-id>/working/<api>-pp-cli")
 	assert.Contains(t, readme, "~/printing-press/library/<api>-pp-cli")
 	assert.Contains(t, readme, "~/printing-press/manuscripts/<api>/<run-id>/")
-	assert.Contains(t, readme, "`research/`, `proofs/`, and `pipeline/`")
+	assert.Contains(t, readme, "`research/`, `proofs/`, `discovery/`, and `pipeline/`")
 	assert.NotContains(t, readme, "cd ~/cli-printing-press")
 }
 

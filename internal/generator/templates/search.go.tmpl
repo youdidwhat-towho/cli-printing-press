@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"{{modulePath}}/internal/store"
@@ -61,7 +62,8 @@ Data must be synced first with the sync command. Searches are instant
 			query := args[0]
 
 			if dbPath == "" {
-				dbPath = defaultDBPath()
+				home, _ := os.UserHomeDir()
+				dbPath = filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db")
 			}
 
 			db, err := store.Open(dbPath)

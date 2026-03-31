@@ -339,61 +339,6 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) error 
 }
 
 {{- range .Tables}}
-{{- if and (ge .Gravity 6) (gt (len .Columns) 3) (ne .Name "sync_state")}}
-// UpsertBatch{{pascal .Name}} inserts or updates multiple {{.Name}} records in a single transaction.
-// Uses typed columns and updates the entity-specific FTS index via triggers.
-func (s *Store) UpsertBatch{{pascal .Name}}(items []json.RawMessage) (int, error) {
-	tx, err := s.db.Begin()
-	if err != nil {
-		return 0, fmt.Errorf("starting batch transaction: %w", err)
-	}
-	defer tx.Rollback()
-
-	count := 0
-	for _, item := range items {
-		var obj map[string]any
-		if err := json.Unmarshal(item, &obj); err != nil {
-			continue
-		}
-
-		id := extractObjectID(obj)
-		if id == "" {
-			continue
-		}
-
-		if err := s.upsertGenericResourceTx(tx, "{{.Name}}", id, item); err != nil {
-			return count, fmt.Errorf("upserting {{.Name}}/%s into resources: %w", id, err)
-		}
-
-		_, err := tx.Exec(
-			`INSERT INTO {{.Name}} ({{columnNames .Columns}})
-			 VALUES ({{columnPlaceholders .Columns}})
-			 ON CONFLICT(id) DO UPDATE SET {{updateSet .Columns}}`,
-			id,
-			string(item),
-			time.Now(),
-{{- range .Columns}}
-{{- if and (ne .Name "id") (ne .Name "data") (ne .Name "synced_at")}}
-			lookupFieldValue(obj, "{{.Name}}"),
-{{- end}}
-{{- end}}
-		)
-		if err != nil {
-			return count, fmt.Errorf("upserting {{.Name}}/%s: %w", id, err)
-		}
-		count++
-	}
-
-	if err := tx.Commit(); err != nil {
-		return 0, err
-	}
-	return count, nil
-}
-
-{{- end}}
-{{- end}}
-
-{{- range .Tables}}
 {{- if .FTS5}}
 // Search{{pascal .Name}} searches the {{.Name}}_fts index with optional filters.
 func (s *Store) Search{{pascal .Name}}(query string, limit int) ([]json.RawMessage, error) {

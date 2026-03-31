@@ -6,6 +6,8 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"time"
 
 	"{{modulePath}}/internal/store"
@@ -47,7 +49,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			c.NoCache = true
 
 			if dbPath == "" {
-				dbPath = defaultDBPath()
+				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
 			s, err := store.Open(dbPath)
 			if err != nil {
@@ -55,74 +57,68 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 			}
 			defer s.Close()
 
-			type archiveResourceConfig struct {
-				name string
-				path string
-				limitParam string
-				pageSize int
-			}
-			resources := []archiveResourceConfig{
-			{{- range .SyncResources}}
-				{name: "{{.Name}}", path: "{{.Path}}", limitParam: "{{if .LimitParam}}{{.LimitParam}}{{else}}limit{{end}}", pageSize: {{if .DefaultLimit}}{{.DefaultLimit}}{{else}}100{{end}}},
-			{{- end}}
-			}
+			resources := []string{ {{- range .SyncableResources}}"{{.}}", {{end}} }
 			totalSynced := 0
 
-			for _, res := range resources {
+			for _, resource := range resources {
 				cursor := ""
 				if !full {
-					existing, _, _, err := s.GetSyncState(res.name)
+					existing, _, _, err := s.GetSyncState(resource)
 					if err == nil && existing != "" {
 						cursor = existing
 					}
 				}
 
-				fmt.Fprintf(cmd.ErrOrStderr(), "Syncing %s...\n", res.name)
+				fmt.Fprintf(cmd.ErrOrStderr(), "Syncing %s...\n", resource)
 
-				params := map[string]string{res.limitParam: fmt.Sprintf("%d", res.pageSize)}
+				params := map[string]string{"limit": "100"}
 				if cursor != "" {
 					params["after"] = cursor
 				}
 
 				count := 0
 				for {
-					data, fetchErr := c.Get(res.path, params)
+					data, fetchErr := c.Get("/"+resource, params)
 					if fetchErr != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "  warning: %s: %v\n", res.name, fetchErr)
+						fmt.Fprintf(cmd.ErrOrStderr(), "  warning: %s: %v\n", resource, fetchErr)
 						break
 					}
-					// Try to extract items from response envelope
 					var items []json.RawMessage
 					if err := json.Unmarshal(data, &items); err != nil {
-						var env struct{ Data []json.RawMessage `json:"data"` }
-						if err2 := json.Unmarshal(data, &env); err2 == nil && len(env.Data) > 0 {
-							items = env.Data
-						} else {
-							if err := s.Upsert(res.name, res.name+"-singleton", data); err != nil {
-								fmt.Fprintf(cmd.ErrOrStderr(), "  warning: store %s: %v\n", res.name, err)
-							}
-							count++
-							break
+						// Might be a single object, not array
+						if err := s.Upsert(resource, resource+"-singleton", data); err != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: store %s: %v\n", resource, err)
 						}
+						count++
+						break
 					}
 					if len(items) == 0 {
 						break
 					}
-					if err := s.UpsertBatch(res.name, items); err != nil {
-						fmt.Fprintf(cmd.ErrOrStderr(), "  warning: batch store %s: %v\n", res.name, err)
+					for _, item := range items {
+						var obj struct{ ID string `json:"id"` }
+						json.Unmarshal(item, &obj)
+						id := obj.ID
+						if id == "" {
+							id = fmt.Sprintf("%s-%d", resource, count)
+						}
+						if err := s.Upsert(resource, id, item); err != nil {
+							fmt.Fprintf(cmd.ErrOrStderr(), "  warning: store %s/%s: %v\n", resource, id, err)
+						}
+						cursor = id
+						count++
+					}
+					if len(items) < 100 {
 						break
 					}
-					count += len(items)
-					if len(items) < res.pageSize {
-						break
-					}
+					params["after"] = cursor
 				}
 
 				if count > 0 {
-					s.SaveSyncState(res.name, "", count)
+					s.SaveSyncState(resource, cursor, count)
 				}
 				totalSynced += count
-				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d items\n", res.name, count)
+				fmt.Fprintf(cmd.ErrOrStderr(), "  %s: %d items\n", resource, count)
 			}
 
 			if flags.asJSON {
@@ -141,7 +137,7 @@ and full resync. After archiving, use 'search' for instant full-text search.`,
 		},
 	}
 
-	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.local/share/{{.Name}}-pp-cli/data.db)")
+	cmd.Flags().StringVar(&dbPath, "db", "", "Database path (default: ~/.config/{{.Name}}-pp-cli/store.db)")
 	cmd.Flags().BoolVar(&full, "full", false, "Full re-archive (ignore previous sync state)")
 
 	return cmd
@@ -160,7 +156,7 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
   {{.Name}}-pp-cli workflow status --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if dbPath == "" {
-				dbPath = defaultDBPath()
+				dbPath = defaultDBPath("{{.Name}}-pp-cli")
 			}
 			s, err := store.Open(dbPath)
 			if err != nil {
@@ -199,4 +195,9 @@ func newWorkflowStatusCmd(flags *rootFlags) *cobra.Command {
 	cmd.Flags().StringVar(&dbPath, "db", "", "Database path")
 
 	return cmd
+}
+
+func defaultDBPath(name string) string {
+	home, _ := os.UserHomeDir()
+	return filepath.Join(home, ".config", name, "store.db")
 }

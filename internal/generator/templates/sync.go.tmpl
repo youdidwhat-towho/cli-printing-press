@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -24,33 +25,6 @@ type syncResult struct {
 	Count    int
 	Err      error
 	Duration time.Duration
-}
-
-// syncResourceConfig holds per-resource pagination and response metadata.
-type syncResourceConfig struct {
-	path           string
-	paginationType string // "cursor", "offset", "page_token", ""
-	limitParam     string
-	cursorParam    string
-	nextCursorPath string
-	hasMoreField   string
-	responsePath   string
-	defaultLimit   int
-}
-
-var syncConfigs = map[string]syncResourceConfig{
-{{- range .SyncResources}}
-	"{{.Name}}": {
-		path:           "{{.Path}}",
-		paginationType: "{{.PaginationType}}",
-		limitParam:     "{{.LimitParam}}",
-		cursorParam:    "{{.CursorParam}}",
-		nextCursorPath: "{{.NextCursorPath}}",
-		hasMoreField:   "{{.HasMoreField}}",
-		responsePath:   "{{.ResponsePath}}",
-		defaultLimit:   {{if .DefaultLimit}}{{.DefaultLimit}}{{else}}100{{end}},
-	},
-{{- end}}
 }
 
 func newSyncCmd(flags *rootFlags) *cobra.Command {
@@ -88,7 +62,8 @@ Once synced, use the 'search' command for instant full-text search.`,
 			c.NoCache = true
 
 			if dbPath == "" {
-				dbPath = defaultDBPath()
+				home, _ := os.UserHomeDir()
+				dbPath = filepath.Join(home, ".local", "share", "{{.Name}}-pp-cli", "data.db")
 			}
 
 			db, err := store.Open(dbPath)
@@ -200,19 +175,7 @@ func syncResource(c interface {
 		fmt.Fprintf(os.Stderr, `{"event":"sync_start","resource":"%s"}`+"\n", resource)
 	}
 
-	// Look up per-resource config; fall back to sensible defaults
-	cfg, ok := syncConfigs[resource]
-	if !ok {
-		cfg = syncResourceConfig{
-			path:           "/" + resource,
-			paginationType: "cursor",
-			limitParam:     "limit",
-			cursorParam:    "after",
-			defaultLimit:   100,
-		}
-	}
-
-	path := cfg.path
+	path := "/" + resource
 	var totalCount int
 
 	// Resume cursor from sync_state (unless --full cleared it)
@@ -221,43 +184,31 @@ func syncResource(c interface {
 	// Determine the since param value:
 	// 1. Explicit --since flag takes priority
 	// 2. Otherwise use last_synced_at from sync_state for incremental sync
+	sinceParam := determineSinceParam()
 	effectiveSince := sinceTS
 	if effectiveSince == "" && !lastSynced.IsZero() && !full {
 		effectiveSince = lastSynced.Format(time.RFC3339)
 	}
 
 	cursor := existingCursor
+	pageSize := determinePaginationDefaults()
+
 	var progressCount int64
-	offset := 0
 
 	for {
 		params := map[string]string{}
 
 		// Set page size
-		if cfg.limitParam != "" {
-			params[cfg.limitParam] = strconv.Itoa(cfg.defaultLimit)
-		}
+		params[pageSize.limitParam] = strconv.Itoa(pageSize.limit)
 
-		// Branch on pagination type
-		switch cfg.paginationType {
-		case "offset":
-			if cfg.cursorParam != "" {
-				params[cfg.cursorParam] = strconv.Itoa(offset)
-			}
-		case "cursor", "page_token":
-			if cursor != "" && cfg.cursorParam != "" {
-				params[cfg.cursorParam] = cursor
-			}
-		default:
-			// No pagination or unknown type: cursor-based as fallback
-			if cursor != "" && cfg.cursorParam != "" {
-				params[cfg.cursorParam] = cursor
-			}
+		// Set cursor for resume
+		if cursor != "" {
+			params[pageSize.cursorParam] = cursor
 		}
 
 		// Set since filter
 		if effectiveSince != "" {
-			params["since"] = effectiveSince
+			params[sinceParam] = effectiveSince
 		}
 
 		data, err := c.Get(path, params)
@@ -268,17 +219,9 @@ func syncResource(c interface {
 			return syncResult{Resource: resource, Count: totalCount, Err: fmt.Errorf("fetching %s: %w", resource, err), Duration: time.Since(started)}
 		}
 
-		// Extract items from the response.
-		// If responsePath is configured, use it directly; otherwise fall back to heuristics.
-		var items []json.RawMessage
-		var nextCursor string
-		var hasMore bool
-
-		if cfg.responsePath != "" {
-			items, nextCursor, hasMore = extractItemsAtPath(data, cfg)
-		} else {
-			items, nextCursor, hasMore = extractPageItems(data, cfg.cursorParam)
-		}
+		// Try to extract items from the response.
+		// Strategy: try array first, then common wrapper keys.
+		items, nextCursor, hasMore := extractPageItems(data, pageSize.cursorParam)
 
 		if len(items) == 0 {
 			// Single object response - try to store as-is
@@ -292,9 +235,8 @@ func syncResource(c interface {
 			break
 		}
 
-		// Batch upsert all items from this page — dispatch to entity-specific
-		// batch methods when available, fall back to generic UpsertBatch.
-		if err := upsertBatchForResource(db, resource, items); err != nil {
+		// Batch upsert all items from this page
+		if err := db.UpsertBatch(resource, items); err != nil {
 			if !humanFriendly {
 				fmt.Fprintf(os.Stderr, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
 			}
@@ -321,40 +263,17 @@ func syncResource(c interface {
 		}
 
 		// Save cursor after each page for resumability
-		saveCursor := nextCursor
-		if cfg.paginationType == "offset" {
-			saveCursor = strconv.Itoa(offset + len(items))
-		}
-		if err := db.SaveSyncState(resource, saveCursor, totalCount); err != nil {
+		if err := db.SaveSyncState(resource, nextCursor, totalCount); err != nil {
 			// Non-fatal: log and continue
 			fmt.Fprintf(os.Stderr, "\nwarning: failed to save sync state for %s: %v\n", resource, err)
 		}
 
-		// No pagination: single fetch, done
-		if cfg.paginationType == "" {
+		// Determine if there are more pages
+		if !hasMore || len(items) < pageSize.limit || nextCursor == "" {
 			break
 		}
 
-		// Determine if there are more pages
-		morePages := false
-		switch cfg.paginationType {
-		case "offset":
-			// Offset APIs: more pages when we got a full page. hasMore is unreliable
-			// (no cursor, often no has_more field).
-			if len(items) >= cfg.defaultLimit {
-				offset += len(items)
-				morePages = true
-			}
-		default:
-			// cursor / page_token: need both a non-empty cursor and indication of more
-			if hasMore && len(items) >= cfg.defaultLimit && nextCursor != "" {
-				cursor = nextCursor
-				morePages = true
-			}
-		}
-		if !morePages {
-			break
-		}
+		cursor = nextCursor
 	}
 
 	// Final sync state: clear cursor (sync is complete), update count
@@ -367,52 +286,26 @@ func syncResource(c interface {
 	return syncResult{Resource: resource, Count: totalCount, Duration: time.Since(started)}
 }
 
-// extractItemsAtPath extracts items from the response using the configured responsePath,
-// and resolves pagination cursors from configured field paths.
-func extractItemsAtPath(data json.RawMessage, cfg syncResourceConfig) ([]json.RawMessage, string, bool) {
-	var envelope map[string]json.RawMessage
-	if err := json.Unmarshal(data, &envelope); err != nil {
-		// Not an object — try as direct array
-		var items []json.RawMessage
-		if err := json.Unmarshal(data, &items); err == nil {
-			return items, "", false
-		}
-		return nil, "", false
-	}
+// paginationDefaults holds the resolved pagination parameter names and page size.
+type paginationDefaults struct {
+	cursorParam string
+	limitParam  string
+	limit       int
+}
 
-	// Extract items at the configured response path
-	var items []json.RawMessage
-	if raw, ok := envelope[cfg.responsePath]; ok {
-		if err := json.Unmarshal(raw, &items); err != nil {
-			return nil, "", false
-		}
+// determinePaginationDefaults returns the pagination parameter names to use.
+// Uses sensible defaults matching common API conventions.
+func determinePaginationDefaults() paginationDefaults {
+	return paginationDefaults{
+		cursorParam: "after",
+		limitParam:  "limit",
+		limit:       100,
 	}
+}
 
-	// Extract next cursor
-	var nextCursor string
-	if cfg.nextCursorPath != "" {
-		if raw, ok := envelope[cfg.nextCursorPath]; ok {
-			var s string
-			if err := json.Unmarshal(raw, &s); err == nil {
-				nextCursor = s
-			}
-		}
-	}
-
-	// Extract has_more
-	var hasMore bool
-	if cfg.hasMoreField != "" {
-		if raw, ok := envelope[cfg.hasMoreField]; ok {
-			_ = json.Unmarshal(raw, &hasMore)
-		}
-	}
-
-	// If we found a cursor, assume there are more pages even without explicit has_more
-	if nextCursor != "" && !hasMore {
-		hasMore = true
-	}
-
-	return items, nextCursor, hasMore
+// determineSinceParam returns the query parameter name for incremental sync filtering.
+func determineSinceParam() string {
+	return "since"
 }
 
 // extractPageItems attempts to extract an array of items and pagination cursor from a response.
@@ -485,22 +378,6 @@ func extractPaginationFromEnvelope(envelope map[string]json.RawMessage, cursorPa
 	return nextCursor, hasMore
 }
 
-// upsertBatchForResource dispatches to entity-specific batch methods when available,
-// falling back to the generic UpsertBatch for unknown resource types.
-func upsertBatchForResource(db *store.Store, resource string, items []json.RawMessage) error {
-	switch resource {
-{{- range .Tables}}
-{{- if and (ge .Gravity 6) (gt (len .Columns) 3) (ne .Name "sync_state")}}
-	case "{{.Name}}":
-		_, err := db.UpsertBatch{{pascal .Name}}(items)
-		return err
-{{- end}}
-{{- end}}
-	default:
-		return db.UpsertBatch(resource, items)
-	}
-}
-
 // upsertSingleObject stores a non-array API response as a single record.
 func upsertSingleObject(db *store.Store, resource string, data json.RawMessage) error {
 	var obj map[string]any
@@ -557,8 +434,8 @@ func parseSinceDuration(s string) (time.Time, error) {
 
 func defaultSyncResources() []string {
 	return []string{
-{{- range .SyncResources}}
-		"{{.Name}}",
+{{- range .SyncableResources}}
+		"{{.}}",
 {{- end}}
 	}
 }
