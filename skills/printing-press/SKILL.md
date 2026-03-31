@@ -27,9 +27,6 @@ Generate the best useful CLI for an API without burning an hour on phase theater
 /printing-press --har ./capture.har --name MyAPI
 /printing-press https://postman.com/explore
 /printing-press https://postman.com
-/printing-press emboss notion
-/printing-press emboss notion-pp-cli
-/printing-press emboss ~/printing-press/library/notion-pp-cli
 ```
 
 ## What Changed In v2
@@ -71,30 +68,15 @@ Keep on Claude:
 
 If Codex fails 3 times in a row, stop delegating and finish locally.
 
-### Emboss Mode
+### Polish Mode (Standalone Skill)
 
-If the arguments start with `emboss`, this is a second-pass improvement cycle for an existing generated CLI.
+For second-pass improvements to an existing CLI, use the standalone polish skill:
 
 ```bash
-/printing-press emboss notion-pp-cli
-/printing-press emboss notion
-/printing-press emboss ~/printing-press/library/notion-pp-cli
+/printing-press-polish redfin
 ```
 
-#### Emboss Name Resolution
-
-The CLI accepts a name or path directly (`printing-press emboss notion`). If the CLI errors with "no CLI named X found," search `$PRESS_LIBRARY/` for close matches and use `AskUserQuestion` to let the user pick. Show at most 4 matches, sorted by directory modification time (most recent first), with human-friendly relative timestamps (e.g. "generated 2 hours ago").
-
-#### Emboss Cycle
-
-Emboss is:
-1. audit baseline
-2. quick re-research
-3. top-5 gap analysis
-4. implement improvements
-5. re-audit and report delta
-
-Do not run emboss automatically.
+See the `printing-press-polish` skill for details. It runs diagnostics, fixes verify failures, removes dead code, cleans up descriptions and README, and offers to publish.
 
 ## Rules
 
@@ -298,7 +280,7 @@ Before new research:
    3. **"Review prior research first"** — Show the full research brief and absorb manifest before deciding.
 
    If the user picks option 1, proceed to Phase 1 (research) and then Phase 2 (generate) as normal.
-   If the user picks option 2, switch to emboss mode (see Emboss Cycle above).
+   If the user picks option 2, invoke `/printing-press-polish <cli-name>` to improve the existing CLI.
    If the user picks option 3, display the prior research, then re-present options 1 and 2.
 
    If no CLI exists in the library, skip this step and proceed normally.
@@ -1554,20 +1536,30 @@ Present via `AskUserQuestion`:
 
 **If no existing PR:**
 
-> "<cli-name> passed shipcheck. Want to publish it to the printing-press-library?"
+> "<cli-name> passed shipcheck ([score]/100, verify [pass-rate]%). What do you want to do?"
 >
-> 1. **Yes — publish now** (validate, package, and open a PR)
-> 2. **No — I'm done**
+> 1. **Publish now** (validate, package, and open a PR)
+> 2. **Polish first** (run `/printing-press-polish` to fix verify failures, dead code, and README before publishing)
+> 3. **Run retro** (analyze the session to find improvements for the generator)
+> 4. **Done for now**
 
-If the verdict was `ship-with-gaps`, prepend: "Note: shipcheck found minor gaps (see the shipcheck report above)."
+If the verdict was `ship-with-gaps`, prepend: "Note: shipcheck found minor gaps (see the shipcheck report above)." and recommend the polish option.
 
-### If accepted
+### If "Publish now"
 
-Invoke `/printing-press publish <cli-name>`. The publish skill handles everything from there — name resolution, category, validation, packaging, git ops, and PR creation or update.
+Invoke `/printing-press publish <cli-name>`. The publish skill handles everything from there.
 
-### If declined
+### If "Polish first"
 
-End normally. The CLI is in `$PRESS_LIBRARY/<api>-pp-cli` and the user can run `/printing-press publish` later.
+Invoke `/printing-press-polish <cli-name>`. The polish skill runs diagnostics, fixes issues, reports the delta, and offers its own publish at the end.
+
+### If "Run retro"
+
+Invoke `/printing-press-retro`. The retro skill analyzes the session for generator improvements.
+
+### If "Done for now"
+
+End normally. The CLI is in `$PRESS_LIBRARY/<api>-pp-cli` and the user can run `/printing-press publish` or `/printing-press-polish` later.
 
 ## Fast Guidance
 
