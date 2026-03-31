@@ -395,6 +395,40 @@ class SteamAPI {
 		assert.Equal(t, "string", result[0].Params[0].Type)
 	})
 
+	t.Run("braces inside line comments are ignored", func(t *testing.T) {
+		t.Parallel()
+		content := `this.get('/path', {
+			key: val, // } closing brace in comment
+			more: val2
+		})`
+		endpoints := []DiscoveredEndpoint{
+			{Method: "GET", Path: "/path", SourceTier: TierCommunitySDK, SourceName: "sdk"},
+		}
+
+		result := EnrichWithParams(content, endpoints)
+
+		names := paramNames(result[0].Params)
+		assert.Contains(t, names, "key")
+		assert.Contains(t, names, "more")
+	})
+
+	t.Run("braces inside block comments are ignored", func(t *testing.T) {
+		t.Parallel()
+		content := `this.get('/path', {
+			key: val, /* { nested } brace */
+			other: val2
+		})`
+		endpoints := []DiscoveredEndpoint{
+			{Method: "GET", Path: "/path", SourceTier: TierCommunitySDK, SourceName: "sdk"},
+		}
+
+		result := EnrichWithParams(content, endpoints)
+
+		names := paramNames(result[0].Params)
+		assert.Contains(t, names, "key")
+		assert.Contains(t, names, "other")
+	})
+
 	t.Run("braces inside string literals are not mismatched", func(t *testing.T) {
 		t.Parallel()
 		content := `this.get('/path', { query: '{complex}', name: val })`
@@ -408,6 +442,45 @@ class SteamAPI {
 		assert.Contains(t, names, "query")
 		assert.Contains(t, names, "name")
 	})
+}
+
+func TestParseSignatureParams(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		input    string
+		required []string // expected required param names
+	}{
+		{name: "empty string", input: "", required: nil},
+		{name: "single positional", input: "steamid", required: []string{"steamid"}},
+		{name: "multiple positional", input: "steamid, appid", required: []string{"steamid", "appid"}},
+		{name: "positional with default is optional", input: "count = 10", required: nil},
+		{name: "mixed required and optional", input: "id, count = 10", required: []string{"id"}},
+		{name: "destructured object is optional", input: "{ opt1 = true, opt2 } = {}", required: nil},
+		{name: "positional then destructured", input: "steamid, { includeAppInfo = true } = {}", required: []string{"steamid"}},
+		{name: "multiple positional then destructured", input: "id, name, { page = 1 } = {}", required: []string{"id", "name"}},
+		{name: "only destructured no positional", input: "{ a, b, c } = {}", required: nil},
+		{name: "trailing comma", input: "steamid, ", required: []string{"steamid"}},
+		{name: "whitespace around names", input: "  id  ,  name  ", required: []string{"id", "name"}},
+		{name: "rest parameter skipped", input: "id, ...args", required: []string{"id"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			result := parseSignatureParams(tt.input)
+
+			if tt.required == nil {
+				assert.Empty(t, result)
+			} else {
+				for _, name := range tt.required {
+					assert.True(t, result[name], "expected %q to be required", name)
+				}
+				assert.Len(t, result, len(tt.required))
+			}
+		})
+	}
 }
 
 // paramNames extracts just the names from a slice of DiscoveredParam.

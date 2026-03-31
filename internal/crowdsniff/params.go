@@ -74,7 +74,7 @@ func EnrichWithParams(content string, endpoints []DiscoveredEndpoint) []Discover
 		}
 
 		// Look backward for function signature to determine required/optional.
-		funcStart := methodIdx[0] - 1000
+		funcStart := methodIdx[0] - maxFuncSignatureLookback
 		if funcStart < 0 {
 			funcStart = 0
 		}
@@ -101,6 +101,11 @@ func EnrichWithParams(content string, endpoints []DiscoveredEndpoint) []Discover
 // maxParamScanDistance is the maximum distance forward from the URL match to
 // look for the opening brace of a params object.
 const maxParamScanDistance = 500
+
+// maxFuncSignatureLookback is the maximum distance backward from the HTTP call
+// to scan for a function definition when correlating required/optional params.
+// 1000 bytes covers most real-world SDK methods while avoiding full-file scans.
+const maxFuncSignatureLookback = 1000
 
 // extractParamsFromPosition scans forward from urlEndPos in content for a
 // params object literal ({ key1: val1, key2: val2 }) and extracts the keys.
@@ -162,7 +167,7 @@ func findParamsObjectStart(region string) int {
 // extractBraceBlock starts at content[pos] which must be '{', and uses a
 // brace-matching scanner to find the closing '}'. Returns the content between
 // the braces (exclusive), or "" if unbalanced.
-// Tracks string literal state to skip braces inside quotes.
+// Tracks string literal and comment state to skip braces inside quotes and comments.
 func extractBraceBlock(content string, pos int) string {
 	if pos >= len(content) || content[pos] != '{' {
 		return ""
@@ -171,6 +176,8 @@ func extractBraceBlock(content string, pos int) string {
 	depth := 0
 	inString := false
 	var stringChar byte
+	inLineComment := false
+	inBlockComment := false
 
 	scanEnd := pos + maxParamScanDistance
 	if scanEnd > len(content) {
@@ -179,6 +186,23 @@ func extractBraceBlock(content string, pos int) string {
 
 	for i := pos; i < scanEnd; i++ {
 		ch := content[i]
+
+		// Line comment: skip until newline.
+		if inLineComment {
+			if ch == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+
+		// Block comment: skip until */.
+		if inBlockComment {
+			if ch == '*' && i+1 < scanEnd && content[i+1] == '/' {
+				inBlockComment = false
+				i++ // skip the '/'
+			}
+			continue
+		}
 
 		// Track string literal state.
 		if inString {
@@ -190,6 +214,21 @@ func extractBraceBlock(content string, pos int) string {
 				inString = false
 			}
 			continue
+		}
+
+		// Detect comment start.
+		if ch == '/' && i+1 < scanEnd {
+			next := content[i+1]
+			if next == '/' {
+				inLineComment = true
+				i++ // skip second '/'
+				continue
+			}
+			if next == '*' {
+				inBlockComment = true
+				i++ // skip '*'
+				continue
+			}
 		}
 
 		if ch == '\'' || ch == '"' || ch == '`' {
@@ -223,6 +262,7 @@ func extractKeysFromBlock(block string) []DiscoveredParam {
 
 	entries := splitObjectEntries(block)
 	for _, entry := range entries {
+		entry = stripComments(entry)
 		entry = strings.TrimSpace(entry)
 		if entry == "" {
 			continue
@@ -255,16 +295,33 @@ func extractKeysFromBlock(block string) []DiscoveredParam {
 }
 
 // splitObjectEntries splits an object literal body into entries, respecting
-// nested braces and string literals. Only splits on commas at depth 0.
+// nested braces, string literals, and comments. Only splits on commas at depth 0.
 func splitObjectEntries(block string) []string {
 	var entries []string
 	depth := 0
 	inString := false
 	var stringChar byte
+	inLineComment := false
+	inBlockComment := false
 	start := 0
 
 	for i := 0; i < len(block); i++ {
 		ch := block[i]
+
+		if inLineComment {
+			if ch == '\n' {
+				inLineComment = false
+			}
+			continue
+		}
+
+		if inBlockComment {
+			if ch == '*' && i+1 < len(block) && block[i+1] == '/' {
+				inBlockComment = false
+				i++
+			}
+			continue
+		}
 
 		if inString {
 			if ch == '\\' {
@@ -275,6 +332,21 @@ func splitObjectEntries(block string) []string {
 				inString = false
 			}
 			continue
+		}
+
+		// Detect comment start.
+		if ch == '/' && i+1 < len(block) {
+			next := block[i+1]
+			if next == '/' {
+				inLineComment = true
+				i++
+				continue
+			}
+			if next == '*' {
+				inBlockComment = true
+				i++
+				continue
+			}
 		}
 
 		if ch == '\'' || ch == '"' || ch == '`' {
@@ -297,6 +369,66 @@ func splitObjectEntries(block string) []string {
 		entries = append(entries, block[start:])
 	}
 	return entries
+}
+
+// stripComments removes JavaScript line comments (//) and block comments (/* */)
+// from a string, preserving content outside comments. Respects string literals.
+func stripComments(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	inString := false
+	var stringChar byte
+
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+
+		if inString {
+			b.WriteByte(ch)
+			if ch == '\\' && i+1 < len(s) {
+				i++
+				b.WriteByte(s[i])
+				continue
+			}
+			if ch == stringChar {
+				inString = false
+			}
+			continue
+		}
+
+		if ch == '\'' || ch == '"' || ch == '`' {
+			inString = true
+			stringChar = ch
+			b.WriteByte(ch)
+			continue
+		}
+
+		if ch == '/' && i+1 < len(s) {
+			next := s[i+1]
+			if next == '/' {
+				// Line comment: skip to end of line.
+				for i+1 < len(s) && s[i+1] != '\n' {
+					i++
+				}
+				continue
+			}
+			if next == '*' {
+				// Block comment: skip to */.
+				i += 2
+				for i+1 < len(s) {
+					if s[i] == '*' && s[i+1] == '/' {
+						i++
+						break
+					}
+					i++
+				}
+				continue
+			}
+		}
+
+		b.WriteByte(ch)
+	}
+
+	return b.String()
 }
 
 // parseObjectEntry parses a single object entry and returns (key, value).
