@@ -83,7 +83,7 @@ becomes a row in Phase 3 — don't filter yet, just collect.
 ### 2a. Errors and retries
 
 Any time a command failed and was re-run, a build broke, or the generator produced
-code that didn't compile. What broke, what fixed it, and how long did it take?
+code that didn't compile. What broke and what fixed it?
 
 ### 2b. Manual code edits
 
@@ -178,58 +178,100 @@ unreliable. A finding that felt universal during the Postman Explore session mig
 be specific to proxy-envelope APIs, or to sniffed specs, or to APIs with entity-type
 enum params.
 
-**Step A: Cross-API stress test.** Mentally test each finding against at least three
-different API shapes:
+**Step A: Cross-API stress test.** Test across both API shapes and input methods
+since the printing press handles all combinations:
 
-- A standard REST API with clean OpenAPI spec (e.g., Stripe, GitHub)
-- A minimal/undocumented API discovered via sniff or HAR
-- An API with a different auth model or response format
+API shapes:
+- A standard REST API with clean resources (e.g., Stripe, GitHub)
+- A non-standard or minimal API (proxy-envelope, RPC-style, etc.)
 
-For each, ask: "Would this exact problem occur? Would the proposed fix help, be
-irrelevant, or actively hurt?"
+Input methods:
+- OpenAPI spec (well-documented, machine-readable)
+- Crowd-sniffed (derived from npm/GitHub SDKs, may have gaps)
+- HAR-sniffed (derived from captured traffic)
+- No spec (Claude researches and builds from scratch)
+
+For each relevant combination, ask: "Would this exact problem occur? Would the
+proposed fix help, be irrelevant, or actively hurt?"
 
 **Step B: Estimate frequency.** Based on the stress test, assign a blast radius:
 
-- **Every API** — occurs regardless of API shape. Be skeptical of this label — it
-  must fail the stress test for all three shapes.
+- **Every API** — occurs regardless of API shape or input method.
 - **Most APIs** — affects common patterns. Name the triggering condition.
 - **API subclass** — affects a specific pattern. Name the subclass precisely:
   proxy-envelope, GraphQL, sniffed-only, offset-paginated, etc.
 - **This API only** — isolated quirk.
 
 **Step C: Assess fallback cost.** This is what happens if the machine does NOT have
-the fix. For each finding, the fallback is one of:
+the fix. The cost is NOT measured in time — Claude does the implementation. The cost
+is about **reliability and quality degradation**:
 
-| Fallback | Cost | Example |
-|----------|------|---------|
-| **Claude rewrites from scratch** | High — 10+ min, error-prone, may forget | Rewriting the entire sync command for offset pagination |
-| **Claude makes targeted edits** | Medium — 2-5 min, usually succeeds | Fixing serviceForPath routing, changing a default path |
-| **Claude deletes/tweaks one thing** | Low — <1 min, mechanical | Removing 3 dead functions, rewriting a Short description |
-| **CLI ships broken** | Critical — user hits the bug at runtime | Infinite sync loop, wrong API responses, empty search |
+| Fallback | Cost | Why it's costly |
+|----------|------|-----------------|
+| **Claude rewrites from scratch** | High — error-prone, may produce inconsistent code | Claude might forget, get it wrong, or produce code that doesn't match the generator's patterns |
+| **Claude makes targeted edits** | Medium — usually succeeds but adds friction | Claude generally catches it, but each manual edit is a chance for the CLI to diverge from machine quality |
+| **Claude deletes/tweaks one thing** | Low — mechanical, reliable | Claude catches it consistently, fix is trivial and deterministic |
+| **CLI ships broken** | Critical — user hits the bug at runtime | Defect reaches the user. No amount of Claude effort during generation prevents this if the machine emits wrong code |
 
-**Step D: Make the tradeoff.** The decision to add conditional logic to the machine
-is NOT just "is it general enough?" — it's a cost-benefit:
+The key question: **how reliably will Claude catch and fix this every time, across
+every future API?** A "simple" edit that Claude forgets 30% of the time is actually
+high cost because those 30% ship with the defect.
 
-```
-machine fix justified when:
-  (frequency × fallback cost) > (implementation effort + regression risk)
-```
+**Step D: Make the tradeoff.** The default is to **fix it in the machine**. The
+retro exists to feed an improvement loop — if findings get punted to Skip by
+default, the loop stalls and CLIs don't get better. Every finding left out of the
+machine is a bet that Claude will catch it every time, and Claude won't.
 
-This means:
-- A finding affecting only 20% of APIs (API subclass) can still justify a machine fix
-  if the fallback is "Claude completely rewrites the sync command" (high cost) or
-  "CLI ships with an infinite loop" (critical).
-- A finding affecting 100% of APIs might NOT justify a machine fix if the fallback is
-  "Claude changes one line" (low cost) and the fix is complex to implement.
-- Narrow-scope fixes should include conditional logic (activate when X, skip otherwise)
-  so they don't regress the simple case. But the mere fact that a condition is required
-  is not a reason to skip the fix — it's a reason to scope it carefully.
+The burden of proof is on *not* fixing, not on fixing.
 
-**The counterpoint to being conservative:** if the machine doesn't cover a wide enough
-breadth of cases, the printed CLIs suffer. Best case is Claude dynamically fixes the
-problem during generation — which is inefficient, error-prone, and might not happen.
-Worst case is the CLI ships with the defect. Every finding left out of the machine is
-a bet that Claude will catch it every time, and Claude won't.
+**Skip** when the behavior is unlikely to occur with other APIs or services.
+
+For each finding, ask: **"If I'm building CLIs for 50 different APIs — big
+enterprise platforms, small indie services, legacy systems, modern startups — is
+this something I'd plausibly encounter again, or is it truly this one vendor's
+idiosyncratic choice?"**
+
+Use your knowledge of the API landscape to make this judgment. You know how APIs
+are built, what conventions exist across the industry, and what patterns different
+vendors converge on independently. Trust that judgment rather than trying to apply
+a mechanical rule.
+
+Examples of findings that were correctly skipped:
+- **Valve's `input_json` wrapping** — Steam's "Service" interfaces require all params
+  encoded as `input_json={"steamid":"xxx"}`. Valve invented this for their internal
+  service RPC layer. Across 50 APIs, you wouldn't see this convention again.
+
+Examples of findings that LOOK isolated but should NOT be skipped:
+- "This API uses API keys in query params instead of headers" — many older APIs
+  do this. You'd see it again.
+- "This API returns 200 for errors with an error field in the body" — common
+  anti-pattern across many APIs.
+- "This API has no pagination and returns everything in one call" — a pagination
+  variant (none/single-page), not a quirk.
+
+**Do** when you'd plausibly encounter the behavior again — even if this is the
+first API to trigger it.
+
+The printing press handles multiple input paths — OpenAPI specs, crowd-sniffed
+specs, HAR-sniffed specs, and no-spec APIs. Findings can surface from any path.
+Examples that cut across input methods:
+- Offset pagination (vs cursor) — fundamental pagination approach, surfaces whether
+  you have an OpenAPI spec or are sniffing traffic
+- Response envelope wrapping — most APIs do this regardless of how the spec was
+  obtained
+- Incomplete parameter discovery — happens with crowd-sniff (SDK gaps), HAR sniff
+  (limited traffic capture), and even OpenAPI specs (undocumented params)
+- Auth pattern detection — needed whether auth info comes from an OpenAPI
+  `securitySchemes`, an SDK constructor, or HAR request headers
+- Resource naming mismatches — the generator's command structure vs user-friendly
+  names is independent of spec source
+
+With the diversity of APIs and input methods the printing press targets, **true
+vendor quirks are rarer than they seem.** When in doubt, lean toward Do with a
+guard rather than Skip.
+
+When the finding applies to a subclass, include conditional logic so it doesn't
+regress the simple case.
 
 When the finding applies to an API subclass, the recommendation must include:
 - **Condition:** When to activate (e.g., "spec has `x-proxy-routes`")
@@ -262,25 +304,17 @@ pagination and verify sync terminates after fetching all pages."
 
 ## Phase 4: Prioritize
 
-Score each finding using the tradeoff from Question 4:
+Group findings into two buckets using judgment, not a formula. No "backlog" —
+backlog is where findings go to die. Either it's worth doing or it's not.
 
-```
-priority = (frequency × fallback cost) / (implementation effort + regression risk)
-```
+- **Do** — worth a machine fix. This is the default. Split into "Do now" (scoped
+  cleanly, can implement immediately) and "Do next" (needs design work or careful
+  guards — plan before implementing).
+- **Skip** — unlikely to encounter again across other APIs. State why.
 
-Where:
-- **Frequency**: every=4, most=3, subclass=2, this-API=1
-- **Fallback cost**: critical=4, high(rewrite)=3, medium(targeted edit)=2, low(one-liner)=1
-- **Implementation effort**: 1(hours) to 4(weeks)
-- **Regression risk**: 0(conditional/guarded) to 3(blanket change touching all APIs)
-
-Present as a ranked table. Group into tiers:
-- **Tier 1: Do now** — high frequency×fallback, low effort, guarded implementation
-- **Tier 2: Plan** — high frequency×fallback but needs design work or careful guards
-- **Tier 3: Backlog** — low fallback cost (Claude handles it fine dynamically) or
-  inherent friction with cheap mitigations
-- **Skip** — this-API-only findings or cases where the dynamic fix is genuinely easier
-  than the machine fix
+Do NOT use numerical scoring formulas. The inputs (frequency=3, fallback=4) are
+ordinal gut-feels, and multiplying them produces fake precision that obscures
+judgment. State the reasoning in words instead.
 
 ## Phase 5: Write the retro
 
@@ -295,19 +329,19 @@ Present as a ranked table. Group into tiers:
 - Fix loops: <N>
 - Manual code edits: <N>
 - Features built from scratch: <N>
-- Time to ship: ~<X>m
 
 ## Findings
 
 ### 1. <Title> (<category>)
 - **What happened:** ...
 - **Root cause:** Component + what's specifically wrong
-- **Cross-API check:** Would this occur for [standard REST]? [sniffed API]? [different auth]?
+- **Cross-API check:** Would this recur across other APIs and input methods?
 - **Frequency:** every API / most / subclass:<name> / this API only
-- **Fallback if machine doesn't fix it:** What Claude has to do dynamically (rewrite,
-  edit, one-liner) or what ships broken
-- **Tradeoff:** Is the machine fix worth it given frequency × fallback cost vs
-  implementation effort + regression risk?
+- **Fallback if machine doesn't fix it:** What Claude has to do dynamically and how
+  reliably Claude catches it (always / usually / sometimes / never). If "sometimes"
+  or "never", the CLI ships with the defect — that's the real cost.
+- **Worth a machine fix?** Default is yes. Only no if you'd be unlikely to encounter
+  this across other APIs. State the reasoning in plain language.
 - **Inherent or fixable:** ...
 - **Durable fix:** Concrete machine change. If subclass-scoped, include:
   - Condition: when to activate
@@ -320,17 +354,17 @@ Present as a ranked table. Group into tiers:
 
 ## Prioritized Improvements
 
-### Tier 1: Do Now
-| # | Fix | Component | Frequency | Fallback Cost | Effort | Guards |
-|---|-----|-----------|-----------|--------------|--------|--------|
+### Do Now
+| # | Fix | Component | Frequency | Fallback Reliability | Complexity | Guards |
+|---|-----|-----------|-----------|---------------------|------------|--------|
 
-### Tier 2: Plan
-| # | Fix | Component | Frequency | Fallback Cost | Effort | Guards |
-|---|-----|-----------|-----------|--------------|--------|--------|
+### Do Next (needs design/planning)
+| # | Fix | Component | Frequency | Fallback Reliability | Complexity | Guards |
+|---|-----|-----------|-----------|---------------------|------------|--------|
 
-### Tier 3: Backlog
-| # | Fix | Component | Frequency | Fallback Cost | Effort | Guards |
-|---|-----|-----------|-----------|--------------|--------|--------|
+### Skip
+| # | Fix | Why unlikely to recur |
+|---|-----|----------------------|
 
 ## Work Units
 
@@ -341,7 +375,7 @@ Present as a ranked table. Group into tiers:
   - positive test: ...
   - negative test: ...
 - **Scope boundary:** ...
-- **Effort:** ...
+- **Complexity:** small / medium / large
 
 ### WU-2: ...
 
@@ -364,7 +398,7 @@ The retro's findings are analytical. To bridge to implementation planning (e.g.,
 via `/compound-engineering:ce-plan`), group related findings into coherent work units that a planner
 could pick up directly.
 
-For each tier 1 or tier 2 group, produce a work unit block:
+For each "Do now" or "Do next" group, produce a work unit block:
 
 ```markdown
 ## Work Units
@@ -378,7 +412,7 @@ For each tier 1 or tier 2 group, produce a work unit block:
   - "Generate from Stripe spec → sync still uses cursor-based pagination (negative test)"
 - **Scope boundary:** What this does NOT include
 - **Dependencies:** Other work units that must complete first (if any)
-- **Estimated effort:** hours/days
+- **Complexity:** small (1-2 files, straightforward) / medium (3-5 files, needs design) / large (new capability, multiple subsystems)
 ```
 
 To resolve target files, actually look at the printing-press repo:
@@ -398,8 +432,8 @@ one fix enables another. For example:
 - Entity-specific store tables + FTS index generation + typed columns
   → "WU: Schema-driven store generation"
 
-A good work unit is something one person could implement in 1-3 days with a clear
-definition of done. If a work unit is bigger than that, split it.
+A good work unit is scoped to a single implementable chunk with a clear definition
+of done. If it touches more than ~5 files across multiple subsystems, split it.
 
 ## Phase 6: Save and present
 
@@ -427,7 +461,7 @@ Save the retro to two places:
 
 ### Present summary
 
-Show the user: top 3 findings, the tier 1 table, and the work units.
+Show the user: the "Do now" table and the work units.
 
 ### Offer to plan
 
@@ -438,7 +472,7 @@ standalone installs). Use `AskUserQuestion` to offer next steps:
 > "Retro saved to `docs/retros/<date>-<api>-retro.md`. Found <N> findings across
 > <M> work units. Want to plan implementation?"
 >
-> 1. **Plan Tier 1 work units** — invoke `/compound-engineering:ce-plan` with the retro's Tier 1 work
+> 1. **Plan "Do now" work units** — invoke `/compound-engineering:ce-plan` with the retro's Do now work
 >    units as input
 > 2. **Plan a specific work unit** — pick one WU to plan
 > 3. **Done for now** — retro is saved, plan later
@@ -454,6 +488,11 @@ opportunities documented in the retro. The retro includes prioritized work units
 with target files, acceptance criteria, and scope boundaries:
 docs/retros/<date>-<api>-retro.md
 [If option 2: Focus on work unit WU-<N>: <title>.]
+
+Note: the retro is advisory, not declarative. During planning you may discover
+valid reasons to adjust scope — combining work units, dropping items that turn out
+to be impractical once you read the code, or adding items the retro missed. That's
+expected. Use the retro as a starting point, not a spec.
 ```
 
 If neither skill name resolves, fall back to:
@@ -472,15 +511,19 @@ If neither skill name resolves, fall back to:
   dismiss friction as inherent without considering alternatives.
 - Be honest about what went well. Protecting good patterns is as important as
   fixing bad ones.
-- **Resist over-generalization.** You just spent an entire session with one API. Your
-  intuition about "every API needs this" is based on a sample size of one. Stress-test
-  every finding against other API shapes before claiming broad blast radius. A fix
-  that helps proxy-envelope APIs but adds unnecessary complexity to a clean REST API
-  is a regression, not an improvement. When in doubt, scope the fix narrowly with
-  conditional logic and let future retros widen it if the pattern recurs.
+- **Bias toward fixing.** The retro feeds an improvement loop. If the loop is too
+  conservative, CLIs don't get better. When in doubt, fix it — scope narrowly with
+  conditional logic if needed. A guarded fix for a rare case is better than no fix
+  at all. Future retros can widen the scope when the pattern recurs.
+- **Look for broader patterns.** Before skipping a finding as API-specific, consider
+  whether it's the first sighting of a behavior you'd encounter again. Offset
+  pagination was first seen on one API — but it's clearly a pattern across many.
 - When a fix only applies to a subclass of APIs, the recommendation must include the
   condition (when to activate) AND the guard (when to skip). A generator change
   without a guard is a blanket change, and blanket changes break simple cases.
+- **No time estimates.** Claude does the implementation. Hours/days/weeks are
+  meaningless. Use complexity sizing (small/medium/large) based on number of files
+  touched and design work needed.
 - Be thorough. The retro document is a reference for future planning — include
   enough detail that someone reading it months later can understand the finding,
   the tradeoff reasoning, and the proposed fix without needing the original
