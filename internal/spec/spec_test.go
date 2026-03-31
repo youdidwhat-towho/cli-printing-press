@@ -198,3 +198,117 @@ resources:
 		assert.NotContains(t, string(data), "meta")
 	})
 }
+
+// --- Unit 5: YAML Format Safety Net Tests ---
+
+func TestParseBytesYAMLVariations(t *testing.T) {
+	t.Parallel()
+
+	t.Run("Python-style YAML with 2-space indent and flow arrays", func(t *testing.T) {
+		t.Parallel()
+		// Python's yaml.dump produces this style with flow sequences
+		input := `name: steamapi
+description: "Steam Web API"
+version: '0.1.0'
+base_url: "https://api.steampowered.com"
+auth:
+  type: api_key
+  header: key
+  in: query
+  env_vars: [STEAM_API_KEY]
+config:
+  format: toml
+  path: "~/.config/steamapi-pp-cli/config.toml"
+resources:
+  users:
+    description: "Manage users"
+    endpoints:
+      list:
+        method: GET
+        path: /users
+        description: "List users"
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		assert.Equal(t, "steamapi", s.Name)
+		assert.Equal(t, "Steam Web API", s.Description)
+		assert.Len(t, s.Resources, 1)
+		assert.Contains(t, s.Resources, "users")
+		assert.Equal(t, "api_key", s.Auth.Type)
+		assert.Equal(t, []string{"STEAM_API_KEY"}, s.Auth.EnvVars)
+	})
+
+	t.Run("Go-style YAML still works (no regression)", func(t *testing.T) {
+		t.Parallel()
+		input := `name: testapi
+base_url: https://api.example.com
+auth:
+  type: api_key
+  header: X-Api-Key
+  env_vars:
+    - TEST_API_KEY
+config:
+  format: toml
+  path: ~/.config/testapi-pp-cli/config.toml
+resources:
+  items:
+    description: Manage items
+    endpoints:
+      list:
+        method: GET
+        path: /items
+        description: List items
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		assert.Equal(t, "testapi", s.Name)
+		assert.Len(t, s.Resources, 1)
+		assert.Equal(t, "api_key", s.Auth.Type)
+	})
+
+	t.Run("YAML with quoted string values", func(t *testing.T) {
+		t.Parallel()
+		input := `"name": "quotedapi"
+"base_url": "https://api.example.com"
+"auth":
+  "type": "bearer_token"
+  "header": "Authorization"
+  "format": "Bearer {token}"
+  "env_vars":
+    - "QUOTED_TOKEN"
+"config":
+  "format": "toml"
+  "path": "~/.config/quotedapi-pp-cli/config.toml"
+"resources":
+  "things":
+    "description": "Manage things"
+    "endpoints":
+      "list":
+        "method": "GET"
+        "path": "/things"
+        "description": "List things"
+`
+		s, err := ParseBytes([]byte(input))
+		require.NoError(t, err)
+		assert.Equal(t, "quotedapi", s.Name)
+		assert.Len(t, s.Resources, 1)
+		assert.Equal(t, "bearer_token", s.Auth.Type)
+	})
+
+	t.Run("invalid YAML still returns error", func(t *testing.T) {
+		t.Parallel()
+		input := `{{{not valid yaml at all`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+	})
+
+	t.Run("valid YAML but missing required fields still fails validation", func(t *testing.T) {
+		t.Parallel()
+		input := `name: incomplete
+description: Missing base_url and resources
+`
+		_, err := ParseBytes([]byte(input))
+		require.Error(t, err)
+		assert.Contains(t, err.Error(), "base_url is required")
+	})
+}
