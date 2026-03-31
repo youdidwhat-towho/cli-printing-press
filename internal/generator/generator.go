@@ -178,14 +178,17 @@ func (g *Generator) Generate() error {
 	}
 
 	for tmplName, outPath := range singleFiles {
-		data := any(g.Spec)
-		if tmplName == "readme.md.tmpl" {
+		var data any
+		switch tmplName {
+		case "readme.md.tmpl":
 			data = g.readmeData()
-		} else if tmplName == "helpers.go.tmpl" {
+		case "helpers.go.tmpl":
 			data = &helpersTemplateData{
 				APISpec:     g.Spec,
 				HelperFlags: computeHelperFlags(g.Spec),
 			}
+		default:
+			data = g.Spec
 		}
 		if err := g.renderTemplate(tmplName, outPath, data); err != nil {
 			return fmt.Errorf("rendering %s: %w", tmplName, err)
