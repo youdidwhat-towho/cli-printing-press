@@ -13,5 +13,5 @@ pre-push:
       fail_text: "gofmt failed. Run 'gofmt -w .' to fix."
     lint:
       glob: "*.go"
-      run: golangci-lint run {push_files}
+      run: golangci-lint run ./...
       fail_text: "golangci-lint failed. Fix lint errors before pushing."

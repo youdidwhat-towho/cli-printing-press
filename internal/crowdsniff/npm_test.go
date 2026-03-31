@@ -656,6 +656,7 @@ class API {
 			tarballServer.URL+"/tarball.tgz",
 			"test-sdk",
 			TierCommunitySDK,
+			"testapi",
 			500,
 		)
 
@@ -684,6 +685,7 @@ class API {
 			"http://evil.com/tarball.tgz",
 			"evil-sdk",
 			TierCommunitySDK,
+			"testapi",
 			0,
 		)
 
@@ -714,6 +716,7 @@ class API {
 			tarballServer.URL+"/tarball.tgz",
 			"test-sdk",
 			TierCommunitySDK,
+			"testapi",
 			0,
 		)
 
@@ -748,6 +751,7 @@ class API {
 			tarballServer.URL+"/tarball.tgz",
 			"symlink-sdk",
 			TierCommunitySDK,
+			"testapi",
 			0,
 		)
 
@@ -880,6 +884,7 @@ class SteamAPI {
 			tarballServer.URL+"/tarball.tgz",
 			"steam-sdk",
 			TierCommunitySDK,
+			"testapi",
 			500,
 		)
 
@@ -966,7 +971,7 @@ class SteamAPI {
   }
 }
 `
-		auths := GrepAuth(content, TierCommunitySDK)
+		auths := GrepAuth(content, TierCommunitySDK, "testapi")
 
 		require.Len(t, auths, 1)
 		assert.Equal(t, "api_key", auths[0].Type)
@@ -989,7 +994,7 @@ class Client {
   }
 }
 `
-		auths := GrepAuth(content, TierOfficialSDK)
+		auths := GrepAuth(content, TierOfficialSDK, "testapi")
 
 		require.Len(t, auths, 1)
 		assert.Equal(t, "bearer_token", auths[0].Type)
@@ -1004,7 +1009,7 @@ class Client {
 
 		content := "const headers = { 'Authorization': `Bearer ${this.apiKey}` };"
 
-		auths := GrepAuth(content, TierCommunitySDK)
+		auths := GrepAuth(content, TierCommunitySDK, "testapi")
 
 		require.Len(t, auths, 1)
 		assert.Equal(t, "bearer_token", auths[0].Type)
@@ -1021,7 +1026,7 @@ function makeRequest(url, apiKey) {
   return fetch(url, { headers });
 }
 `
-		auths := GrepAuth(content, TierCommunitySDK)
+		auths := GrepAuth(content, TierCommunitySDK, "testapi")
 
 		require.Len(t, auths, 1)
 		assert.Equal(t, "api_key", auths[0].Type)
@@ -1038,7 +1043,7 @@ class Client {
   createUser(data) { return this.post("/v1/users", data); }
 }
 `
-		auths := GrepAuth(content, TierCommunitySDK)
+		auths := GrepAuth(content, TierCommunitySDK, "testapi")
 		assert.Empty(t, auths)
 	})
 
@@ -1053,7 +1058,7 @@ class SteamAPI {
   }
 }
 `
-		auths := GrepAuth(content, TierCommunitySDK)
+		auths := GrepAuth(content, TierCommunitySDK, "steam")
 
 		require.NotEmpty(t, auths)
 		assert.Equal(t, "STEAM_API_KEY", auths[0].EnvVarHint)
@@ -1064,14 +1069,36 @@ class SteamAPI {
 
 		content := `const key = process.env['NOTION_API_KEY'];`
 
-		auths := GrepAuth(content, TierOfficialSDK)
+		auths := GrepAuth(content, TierOfficialSDK, "testapi")
 		// No specific auth pattern found for the key usage, but env var hint
 		// won't be applied without an auth match. This verifies extractEnvVarHint works.
-		hint := extractEnvVarHint(content)
+		hint := extractEnvVarHint(content, "notion")
 		assert.Equal(t, "NOTION_API_KEY", hint)
 
 		// Even without a matching auth pattern, we get no false positives.
 		_ = auths
+	})
+
+	t.Run("env var hint filters by API name relevance", func(t *testing.T) {
+		t.Parallel()
+
+		content := `
+const secret = process.env.COOKIE_SECRET;
+const key = process.env.STEAM_API_KEY;
+class Client {
+  request(url) { return fetch(url + '?key=' + key); }
+}
+`
+		// API name "steam" → picks STEAM_API_KEY, not COOKIE_SECRET
+		auths := GrepAuth(content, TierCommunitySDK, "steam")
+		require.NotEmpty(t, auths)
+		assert.Equal(t, "STEAM_API_KEY", auths[0].EnvVarHint)
+
+		// API name "notion" → no match, hint empty (deriveEnvVar handles it)
+		auths2 := GrepAuth(content, TierCommunitySDK, "notion")
+		if len(auths2) > 0 {
+			assert.Empty(t, auths2[0].EnvVarHint)
+		}
 	})
 
 	t.Run("multiple auth patterns detected", func(t *testing.T) {
@@ -1086,7 +1113,7 @@ class DualAuthClient {
   }
 }
 `
-		auths := GrepAuth(content, TierCommunitySDK)
+		auths := GrepAuth(content, TierCommunitySDK, "testapi")
 
 		// Should detect both bearer and X-Api-Key.
 		assert.GreaterOrEqual(t, len(auths), 2)
@@ -1108,7 +1135,7 @@ function getUser(userId) {
   return this.get("/users/" + userId, params);
 }
 `
-		auths := GrepAuth(content, TierCommunitySDK)
+		auths := GrepAuth(content, TierCommunitySDK, "testapi")
 
 		require.Len(t, auths, 1)
 		assert.Equal(t, "api_key", auths[0].Type)
@@ -1348,6 +1375,7 @@ class SteamAPI {
 			tarballServer.URL+"/tarball.tgz",
 			"steam-sdk",
 			TierCommunitySDK,
+			"testapi",
 			500,
 		)
 
@@ -1391,6 +1419,7 @@ class API {
 			tarballServer.URL+"/tarball.tgz",
 			"test-sdk",
 			TierCommunitySDK,
+			"testapi",
 			0,
 		)
 

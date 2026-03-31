@@ -158,7 +158,7 @@ func (s *NPMSource) Discover(ctx context.Context, apiName string) (SourceResult,
 		}
 
 		// Download and extract tarball.
-		endpoints, baseURLs, authPatterns, processErr := s.processPackageTarball(ctx, tarballURL, pkg.Name, tier, downloads[pkg.Name])
+		endpoints, baseURLs, authPatterns, processErr := s.processPackageTarball(ctx, tarballURL, pkg.Name, tier, apiName, downloads[pkg.Name])
 		if processErr != nil {
 			fmt.Fprintf(os.Stderr, "crowd-sniff: failed to process %s: %v\n", pkg.Name, processErr)
 			continue
@@ -288,7 +288,7 @@ func (s *NPMSource) fetchTarballURL(ctx context.Context, name, version string) (
 }
 
 // processPackageTarball downloads a tarball, extracts it, and greps for endpoints, auth patterns, and base URLs.
-func (s *NPMSource) processPackageTarball(ctx context.Context, tarballURL, pkgName, tier string, weeklyDownloads int) ([]DiscoveredEndpoint, []string, []DiscoveredAuth, error) {
+func (s *NPMSource) processPackageTarball(ctx context.Context, tarballURL, pkgName, tier, apiName string, weeklyDownloads int) ([]DiscoveredEndpoint, []string, []DiscoveredAuth, error) {
 	// Security: validate tarball URL is HTTPS.
 	parsed, err := url.Parse(tarballURL)
 	if err != nil {
@@ -370,7 +370,7 @@ func (s *NPMSource) processPackageTarball(ctx context.Context, tarballURL, pkgNa
 	_ = weeklyDownloads // Used for future priority sorting; tier stays the same.
 
 	// Extract auth patterns from the combined source content.
-	authPatterns := GrepAuth(allContent.String(), tier)
+	authPatterns := GrepAuth(allContent.String(), tier, apiName)
 
 	return allEndpoints, allBaseURLs, authPatterns, nil
 }
@@ -518,7 +518,7 @@ var (
 // any detected auth configurations. Designed for high precision — it only
 // reports patterns that are clearly auth-related. False negatives are
 // acceptable; false positives are not.
-func GrepAuth(content string, sourceTier string) []DiscoveredAuth {
+func GrepAuth(content string, sourceTier string, apiName string) []DiscoveredAuth {
 	var auths []DiscoveredAuth
 	seen := make(map[string]bool) // dedup by Type+In+Header
 
@@ -566,7 +566,7 @@ func GrepAuth(content string, sourceTier string) []DiscoveredAuth {
 	}
 
 	// Look for env var hints.
-	envVarHint := extractEnvVarHint(content)
+	envVarHint := extractEnvVarHint(content, apiName)
 
 	// Apply env var hint to the first detected auth.
 	if envVarHint != "" && len(auths) > 0 {
@@ -577,17 +577,34 @@ func GrepAuth(content string, sourceTier string) []DiscoveredAuth {
 }
 
 // extractEnvVarHint scans content for process.env references that look
-// auth-related and returns the first match.
-func extractEnvVarHint(content string) string {
+// auth-related. Prefers env vars containing the API name (e.g., STEAM_API_KEY
+// for api "steam") over generic matches (e.g., COOKIE_SECRET). Returns empty
+// string if no API-name-relevant hint is found — the caller falls back to
+// deriveEnvVar() which generates a sensible default from the API name.
+func extractEnvVarHint(content string, apiName string) string {
 	matches := envVarHintPattern.FindAllStringSubmatch(content, -1)
+	upperAPI := strings.ToUpper(strings.ReplaceAll(apiName, ".", "_"))
+
+	var candidates []string
 	for _, m := range matches {
-		// Group 1 is process.env.VAR, group 2 is process.env['VAR'].
+		var name string
 		if m[1] != "" {
-			return m[1]
+			name = m[1]
+		} else if m[2] != "" {
+			name = m[2]
 		}
-		if m[2] != "" {
-			return m[2]
+		if name != "" {
+			candidates = append(candidates, name)
 		}
 	}
+
+	// Prefer candidates containing the API name.
+	for _, c := range candidates {
+		if upperAPI != "" && strings.Contains(c, upperAPI) {
+			return c
+		}
+	}
+
+	// No API-name-relevant match — return empty to let deriveEnvVar() handle it.
 	return ""
 }
