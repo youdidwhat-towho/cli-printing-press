@@ -5,10 +5,13 @@
 ```bash
 go build -o ./printing-press ./cmd/printing-press
 go test ./...
+gofmt -w ./...
 golangci-lint run --new-from-rev=origin/main ./...
 ```
 
-A pre-push hook runs `golangci-lint` automatically on `git push`. The same config (`.golangci.yml`: errcheck, govet, staticcheck, unused) runs in CI. To run lint manually: `golangci-lint run --new-from-rev=origin/main ./...`
+A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push hook runs `golangci-lint`. The same config (`.golangci.yml`: errcheck, govet, staticcheck, unused) runs in CI. To run lint manually: `golangci-lint run --new-from-rev=origin/main ./...`
+
+**Always run `gofmt -w ./...` after writing Go code.** Subagents and code generators often produce valid but unformatted Go. The pre-commit hook catches this for commits in the repo, but code written to external directories (e.g., `~/printing-press/library/`) must be formatted explicitly.
 
 **IMPORTANT: Always use relative paths for build output.** Never build to `/tmp` or any shared absolute path. Multiple worktrees run concurrently and will stomp on each other. Use `./printing-press` exactly as shown above.
 

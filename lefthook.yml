@@ -1,3 +1,10 @@
+pre-commit:
+  commands:
+    fmt:
+      glob: "*.go"
+      run: gofmt -w {staged_files} && git add {staged_files}
+      stage_fixed: true
+
 pre-push:
   commands:
     fmt:
