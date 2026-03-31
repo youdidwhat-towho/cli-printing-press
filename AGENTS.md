@@ -98,3 +98,15 @@ Generated artifacts live under the user's home directory, not in this repo.
 The API slug is derived by the generator from the spec title (`cleanSpecName`), not manually chosen. The CLI name is `<api-slug>-pp-cli`. Never hardcode an API slug when the generator can derive it — names with periods (cal.com, dub.co) normalize differently than you'd guess.
 
 The `-pp-` infix exists to avoid colliding with official CLIs. `notion-pp-cli` can coexist with whatever `notion-cli` Notion ships themselves.
+
+## Internal Skills
+
+`.claude/skills/` contains internal skills for developing the printing press itself (e.g., `printing-press-retro`). These load automatically when Claude Code is started from inside this repo — no setup needed.
+
+If you're running Claude Code from a different directory and need these skills available, install them globally:
+
+```bash
+.claude/scripts/install-internal-skills.sh
+```
+
+This copies the internal skills to `~/.claude/skills/`.
