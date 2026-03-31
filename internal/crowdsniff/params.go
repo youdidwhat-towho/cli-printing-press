@@ -143,19 +143,20 @@ func findParamsObjectStart(region string) int {
 	foundComma := false
 	for i, ch := range region {
 		if !foundComma {
-			if ch == ',' {
+			switch ch {
+			case ',':
 				foundComma = true
-			} else if ch == ')' {
+			case ')':
 				// Closing paren before finding comma means no params.
 				return -1
 			}
 			continue
 		}
 		// After comma, skip whitespace/newlines until we find '{' or give up.
-		if ch == '{' {
+		switch {
+		case ch == '{':
 			return i
-		}
-		if !unicode.IsSpace(ch) {
+		case !unicode.IsSpace(ch):
 			// Non-whitespace, non-brace after comma — not a params object.
 			// Could be a second string argument or variable.
 			return -1
@@ -237,9 +238,10 @@ func extractBraceBlock(content string, pos int) string {
 			continue
 		}
 
-		if ch == '{' {
+		switch ch {
+		case '{':
 			depth++
-		} else if ch == '}' {
+		case '}':
 			depth--
 			if depth == 0 {
 				// Return content between outer braces.
