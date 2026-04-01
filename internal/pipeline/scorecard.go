@@ -773,20 +773,10 @@ func scoreWorkflows(dir string) int {
 			continue
 		}
 
-		// Count files that make 2+ different API calls in a single RunE.
-		apiCalls := 0
-		if strings.Contains(content, "c.Get(") || strings.Contains(content, "c.Get (") {
-			apiCalls++
-		}
-		if strings.Contains(content, "c.Post(") || strings.Contains(content, "c.Post (") {
-			apiCalls++
-		}
-		if strings.Contains(content, "c.Put(") || strings.Contains(content, "c.Put (") {
-			apiCalls++
-		}
-		if strings.Contains(content, "c.Delete(") || strings.Contains(content, "c.Delete (") {
-			apiCalls++
-		}
+		// Count files that make 2+ API calls (total occurrences, not unique methods).
+		// A command calling c.Get 3 times is a compound workflow even if it never uses POST.
+		apiCallRe := regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
+		apiCalls := len(apiCallRe.FindAllString(content, -1))
 		if strings.Contains(content, "store.") {
 			apiCalls++
 		}
@@ -832,7 +822,7 @@ func scoreInsight(dir string) int {
 		}
 		name := strings.ToLower(e.Name())
 
-		// Check prefix match
+		// Signal 1: filename prefix match (supplementary — kept for backward compat)
 		prefixMatch := false
 		for _, prefix := range insightPrefixes {
 			if strings.HasPrefix(name, prefix) {
@@ -845,15 +835,42 @@ func scoreInsight(dir string) int {
 			continue
 		}
 
-		// Structural detection: commands that query the store and produce
-		// aggregated/computed output (COUNT, SUM, GROUP BY, etc.) are insights
 		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		if content == "" {
+			continue
+		}
+
+		// Signal 2 (existing): store + SQL aggregation
 		usesStore := strings.Contains(content, "/store") || strings.Contains(content, "store.Open") || strings.Contains(content, "store.New")
 		rateRe := regexp.MustCompile(`\brate\b|\bRate\b`)
-		hasAggregation := strings.Contains(content, "COUNT(") || strings.Contains(content, "SUM(") ||
+		hasSQLAgg := strings.Contains(content, "COUNT(") || strings.Contains(content, "SUM(") ||
 			strings.Contains(content, "GROUP BY") || strings.Contains(content, "AVG(") ||
 			rateRe.MatchString(content)
-		if usesStore && hasAggregation {
+		if usesStore && hasSQLAgg {
+			found++
+			continue
+		}
+
+		// Signal 3 (new): behavioral — command produces derived/aggregated output.
+		// Detects Go-level aggregation: sorting, percentage calculations, comparisons,
+		// summary statistics. Requires multi-source input (2+ API calls or store usage)
+		// to avoid counting simple pass-through commands.
+		apiCallRe := regexp.MustCompile(`c\.Get\s*\(`)
+		apiCallCount := len(apiCallRe.FindAllString(content, -1))
+		hasMultiSource := apiCallCount >= 2 || usesStore
+
+		hasGoAgg := strings.Contains(content, "sort.Slice") ||
+			strings.Contains(content, "sort.Sort") ||
+			strings.Contains(content, "* 100") ||
+			strings.Contains(content, "/ total") ||
+			strings.Contains(content, "/ float64(") ||
+			strings.Contains(content, `fmt.Sprintf("%.`) ||
+			strings.Contains(content, "percentage") ||
+			strings.Contains(content, "Percentage") ||
+			strings.Contains(content, "completion") ||
+			strings.Contains(content, "Completion")
+
+		if hasMultiSource && hasGoAgg {
 			found++
 		}
 	}
@@ -993,7 +1010,7 @@ func evaluatePathValidity(dir string, spec *openAPISpecInfo) dimensionScore {
 	}
 
 	pathRe := regexp.MustCompile(`\bpath\s*(?::=|=|:)\s*"([^"]+)"`)
-	cmdFiles := sampleCommandFiles(dir, 10)
+	cmdFiles := sampleCommandFiles(dir, 0) // scan all files, not a sample — avoids bias toward early-alphabet wrapper commands
 	if len(cmdFiles) == 0 {
 		return dimensionScore{scored: true}
 	}
@@ -1001,13 +1018,15 @@ func evaluatePathValidity(dir string, spec *openAPISpecInfo) dimensionScore {
 	total := 0
 	matches := 0
 	for _, content := range cmdFiles {
-		match := pathRe.FindStringSubmatch(content)
-		if len(match) < 2 {
-			continue
-		}
-		total++
-		if specPathExists(spec.Paths, match[1]) {
-			matches++
+		found := pathRe.FindAllStringSubmatch(content, -1)
+		for _, match := range found {
+			if len(match) < 2 {
+				continue
+			}
+			total++
+			if specPathExists(spec.Paths, match[1]) {
+				matches++
+			}
 		}
 	}
 
