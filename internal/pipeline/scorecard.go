@@ -855,7 +855,7 @@ func scoreInsight(dir string) int {
 		// Detects Go-level aggregation: sorting, percentage calculations, comparisons,
 		// summary statistics. Requires multi-source input (2+ API calls or store usage)
 		// to avoid counting simple pass-through commands.
-		apiCallRe := regexp.MustCompile(`c\.Get\s*\(`)
+		apiCallRe := regexp.MustCompile(`c\.(Get|Post|Put|Delete|Patch)\s*\(`)
 		apiCallCount := len(apiCallRe.FindAllString(content, -1))
 		hasMultiSource := apiCallCount >= 2 || usesStore
 
