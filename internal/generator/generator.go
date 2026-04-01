@@ -68,18 +68,26 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		templates: make(map[string]*template.Template),
 	}
 	g.funcs = template.FuncMap{
-		"title":              cases.Title(language.English).String,
-		"lower":              strings.ToLower,
-		"upper":              strings.ToUpper,
-		"join":               strings.Join,
-		"camel":              toCamel,
-		"snake":              toSnake,
-		"pascal":             toPascal,
-		"goType":             goType,
-		"goStoreType":        goStoreType,
-		"cobraFlagFunc":      cobraFlagFunc,
-		"defaultVal":         defaultVal,
-		"zeroVal":            zeroVal,
+		"title":                 cases.Title(language.English).String,
+		"lower":                 strings.ToLower,
+		"upper":                 strings.ToUpper,
+		"join":                  strings.Join,
+		"camel":                 toCamel,
+		"snake":                 toSnake,
+		"pascal":                toPascal,
+		"goType":                goType,
+		"goTypeForParam":        goTypeForParam,
+		"goStoreType":           goStoreType,
+		"cobraFlagFunc":         cobraFlagFunc,
+		"cobraFlagFuncForParam": cobraFlagFuncForParam,
+		"defaultVal":            defaultVal,
+		"zeroVal":               zeroVal,
+		"zeroValForParam": func(name, t string) string {
+			if isIDParam(name) && t == "int" {
+				return `""`
+			}
+			return zeroVal(t)
+		},
 		"positionalArgs":     positionalArgs,
 		"configTag":          configTag,
 		"camelToJSON":        camelToJSON,
@@ -97,6 +105,12 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"modulePath":         func() string { return naming.CLI(s.Name) },
 		"kebab":              toKebab,
 		"envName":            func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
+		"firstResource": func(resources map[string]spec.Resource) string {
+			for name := range resources {
+				return name
+			}
+			return "resource"
+		},
 	}
 	return g
 }
@@ -618,6 +632,17 @@ func toPascal(s string) string {
 	return strings.Join(parts, "")
 }
 
+// isIDParam returns true if the parameter name suggests it's an identifier
+// that should be typed as string regardless of the spec's declared type.
+// IDs like steamid (17-digit number) overflow int64, and zero-value confusion
+// makes IntVar unsuitable for identifiers.
+func isIDParam(name string) bool {
+	lower := strings.ToLower(name)
+	return strings.HasSuffix(lower, "id") || strings.HasSuffix(lower, "ids") ||
+		strings.HasSuffix(lower, "_id") || strings.HasSuffix(lower, "_ids") ||
+		lower == "steamid" || lower == "steamids"
+}
+
 func goType(t string) string {
 	switch t {
 	case "string":
@@ -708,7 +733,32 @@ func cobraFlagFunc(t string) string {
 	}
 }
 
+// goTypeForParam returns the Go type for a parameter, overriding int→string
+// for ID-like parameters to avoid overflow and zero-value confusion.
+func goTypeForParam(name, t string) string {
+	if isIDParam(name) && t == "int" {
+		return "string"
+	}
+	return goType(t)
+}
+
+// cobraFlagFuncForParam returns the cobra flag function, overriding IntVar→StringVar
+// for ID-like parameters.
+func cobraFlagFuncForParam(name, t string) string {
+	if isIDParam(name) && t == "int" {
+		return "StringVar"
+	}
+	return cobraFlagFunc(t)
+}
+
 func defaultVal(p spec.Param) string {
+	// ID params are overridden to string type — use string defaults
+	if isIDParam(p.Name) && p.Type == "int" {
+		if p.Default != nil {
+			return fmt.Sprintf("%q", fmt.Sprintf("%v", p.Default))
+		}
+		return `""`
+	}
 	if p.Default != nil {
 		// Coerce the default value to match the declared param type
 		switch p.Type {

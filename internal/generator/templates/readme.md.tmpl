@@ -135,6 +135,28 @@ This CLI is designed for AI agent consumption:
 
 Exit codes: `0` success, `2` usage error, `3` not found, `4` auth error, `5` API error, `7` rate limited, `10` config error.
 
+## Cookbook
+
+Common workflows and recipes:
+
+```bash
+# List resources as JSON for scripting
+{{.Name}}-pp-cli {{firstResource .Resources}} list --json
+
+# Filter to specific fields
+{{.Name}}-pp-cli {{firstResource .Resources}} list --json --select id,name,status
+
+# Dry run to preview the request
+{{.Name}}-pp-cli {{firstResource .Resources}} list --dry-run
+
+# Sync data locally for offline search
+{{.Name}}-pp-cli sync
+{{.Name}}-pp-cli search "query"
+
+# Export for backup
+{{.Name}}-pp-cli export --format jsonl > backup.jsonl
+```
+
 ## Health Check
 
 ```bash

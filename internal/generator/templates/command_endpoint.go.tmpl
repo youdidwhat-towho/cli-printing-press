@@ -6,27 +6,22 @@ package cli
 import (
 	"encoding/json"
 	"fmt"
+{{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")}}
 	"io"
+{{- end}}
 	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 )
 
-var _ = strings.ReplaceAll // ensure import
-var _ = fmt.Sprintf        // ensure import
-var _ = io.ReadAll         // ensure import
-var _ = os.Stdin           // ensure import
-var _ json.RawMessage      // ensure import
-
 func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra.Command {
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
-	var flag{{camel .Name}} {{goType .Type}}
+	var flag{{camel .Name}} {{goTypeForParam .Name .Type}}
 {{- end}}
 {{- end}}
 {{- range .Endpoint.Body}}
-	var body{{camel .Name}} {{goType .Type}}
+	var body{{camel .Name}} {{goTypeForParam .Name .Type}}
 {{- end}}
 {{- if .Endpoint.Pagination}}
 	var flagAll bool
@@ -78,7 +73,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			params := map[string]string{}
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
-			if flag{{camel .Name}} != {{zeroVal .Type}} {
+			if flag{{camel .Name}} != {{zeroValForParam .Name .Type}} {
 				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel .Name}})
 			}
 {{- end}}
@@ -100,7 +95,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{- range .Endpoint.Body}}
-				if body{{camel .Name}} != {{zeroVal .Type}} {
+				if body{{camel .Name}} != {{zeroValForParam .Name .Type}} {
 					body["{{.Name}}"] = body{{camel .Name}}
 				}
 {{- end}}
@@ -123,7 +118,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{- range .Endpoint.Body}}
-				if body{{camel .Name}} != {{zeroVal .Type}} {
+				if body{{camel .Name}} != {{zeroValForParam .Name .Type}} {
 					body["{{.Name}}"] = body{{camel .Name}}
 				}
 {{- end}}
@@ -144,7 +139,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			} else {
 				body = map[string]any{}
 {{- range .Endpoint.Body}}
-				if body{{camel .Name}} != {{zeroVal .Type}} {
+				if body{{camel .Name}} != {{zeroValForParam .Name .Type}} {
 					body["{{.Name}}"] = body{{camel .Name}}
 				}
 {{- end}}
@@ -239,14 +234,14 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 
 {{- range .Endpoint.Params}}
 {{- if not .Positional}}
-	cmd.Flags().{{cobraFlagFunc .Type}}(&flag{{camel .Name}}, "{{flagName .Name}}", {{defaultVal .}}, "{{oneline .Description}}")
+	cmd.Flags().{{cobraFlagFuncForParam .Name .Type}}(&flag{{camel .Name}}, "{{flagName .Name}}", {{defaultVal .}}, "{{oneline .Description}}")
 {{- if .Required}}
 	_ = cmd.MarkFlagRequired("{{flagName .Name}}")
 {{- end}}
 {{- end}}
 {{- end}}
 {{- range .Endpoint.Body}}
-	cmd.Flags().{{cobraFlagFunc .Type}}(&body{{camel .Name}}, "{{flagName .Name}}", {{defaultVal .}}, "{{oneline .Description}}")
+	cmd.Flags().{{cobraFlagFuncForParam .Name .Type}}(&body{{camel .Name}}, "{{flagName .Name}}", {{defaultVal .}}, "{{oneline .Description}}")
 {{- if .Required}}
 	_ = cmd.MarkFlagRequired("{{flagName .Name}}")
 {{- end}}
