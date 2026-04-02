@@ -14,7 +14,9 @@ because API keys often contain regex metacharacters (`+`, `/`, `.`, `=`) that wo
 cause `grep` to match wrong text and `sed` to corrupt files.
 
 ```bash
-if [ -n "$API_KEY_VALUE" ]; then
+# Guard: skip if key is empty or too short (< 16 chars). Short strings
+# would over-redact legitimate content. Real API keys are 20+ chars.
+if [ -n "$API_KEY_VALUE" ] && [ ${#API_KEY_VALUE} -ge 16 ]; then
   LEAK_FOUND=false
   for dir in "$RESEARCH_DIR" "$PROOFS_DIR" "$DISCOVERY_DIR"; do
     if [ -d "$dir" ] && grep -rF "$API_KEY_VALUE" "$dir" 2>/dev/null; then
