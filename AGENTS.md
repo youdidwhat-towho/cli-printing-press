@@ -147,3 +147,13 @@ If you're running Claude Code from a different directory and need these skills a
 ```
 
 This copies the internal skills to `~/.claude/skills/`.
+
+## Skill Authoring: Reference File Pattern
+
+Skills use a `references/` directory for content that is only needed during specific phases or conditions. The SKILL.md stays lean with inline pointers (`Read [references/foo.md](...) when X`), and the agent loads the reference file only when the condition is met.
+
+**Why this matters:** SKILL.md content is loaded into the context window for every tool call in the session. A 2,000-line skill burns tokens on every phase — even phases that don't need most of the content. Extracting conditional sections (e.g., browser capture flows only needed when sniffing, codex templates only needed in codex mode) into reference files reduces baseline context by 30-40%.
+
+**What stays inline:** Cardinal rules, decision matrices, phase structure, user-facing prompts — anything the agent needs at all times or to decide whether to load more.
+
+**What gets extracted:** Implementation details for conditional paths: capture tool CLI commands, delegation templates, scoring frameworks, report templates. These are loaded on-demand when the agent reaches the relevant phase gate.
