@@ -415,11 +415,13 @@ func (g *Generator) Generate() error {
 		SyncableResources []profiler.SyncableResource
 		SearchableFields  map[string][]string
 		Tables            []TableDef
+		Pagination        profiler.PaginationProfile
 	}{
 		APISpec:           g.Spec,
 		SyncableResources: g.profile.SyncableResources,
 		SearchableFields:  g.profile.SearchableFields,
 		Tables:            schema,
+		Pagination:        g.profile.Pagination,
 	}
 
 	for _, tmplName := range g.VisionSet.TemplateNames() {

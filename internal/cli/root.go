@@ -13,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	catalogfs "github.com/mvanhorn/cli-printing-press/catalog"
+	"github.com/mvanhorn/cli-printing-press/internal/catalog"
 	"github.com/mvanhorn/cli-printing-press/internal/docspec"
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/internal/graphql"
@@ -154,6 +156,7 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitInputError, Err: err}
 				}
 
+				enrichSpecFromCatalog(parsed)
 				gen := generator.New(parsed, absOut)
 				loadResearchSources(gen, researchDir)
 				if err := gen.Generate(); err != nil {
@@ -280,6 +283,7 @@ func newGenerateCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: err}
 			}
 
+			enrichSpecFromCatalog(apiSpec)
 			gen := generator.New(apiSpec, absOut)
 			loadResearchSources(gen, researchDir)
 			if err := gen.Generate(); err != nil {
@@ -665,4 +669,20 @@ func loadResearchSources(gen *generator.Generator, researchDir string) {
 	}
 	discoveryDir := filepath.Join(researchDir, "discovery")
 	gen.DiscoveryPages = pipeline.ParseDiscoveryPages(discoveryDir)
+}
+
+// enrichSpecFromCatalog looks up the API in the embedded catalog and copies
+// ProxyRoutes into the spec if present. This allows catalog entries to declare
+// service routing for proxy-envelope APIs without requiring CLI flags.
+func enrichSpecFromCatalog(apiSpec *spec.APISpec) {
+	if apiSpec == nil || apiSpec.Name == "" {
+		return
+	}
+	entry, err := catalog.LookupFS(catalogfs.FS, apiSpec.Name)
+	if err != nil {
+		return
+	}
+	if len(entry.ProxyRoutes) > 0 && len(apiSpec.ProxyRoutes) == 0 {
+		apiSpec.ProxyRoutes = entry.ProxyRoutes
+	}
 }

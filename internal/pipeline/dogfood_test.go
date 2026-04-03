@@ -347,6 +347,31 @@ func newBarCmd() {}
 	assert.Empty(t, result.Unregistered)
 }
 
+func TestCheckCommandTree_KebabConversion(t *testing.T) {
+	dir := t.TempDir()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+
+	// Define subcommands with CamelCase function names
+	writeTestFile(t, filepath.Join(cliDir, "api.go"), `package cli
+func newApiGetCategoryCmd() {}
+func newApiListTeamsCmd() {}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "auth.go"), `package cli
+func newAuthLoginCmd() {}
+`)
+	writeTestFile(t, filepath.Join(cliDir, "sync.go"), `package cli
+func newSyncCmd() {}
+`)
+
+	result := checkCommandTree(dir)
+	// Should find 4 defined commands
+	assert.Equal(t, 4, result.Defined)
+	// Without a buildable binary, all treated as registered
+	assert.Equal(t, 4, result.Registered)
+	assert.Empty(t, result.Unregistered)
+}
+
 func TestCheckConfigConsistency(t *testing.T) {
 	dir := t.TempDir()
 	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))

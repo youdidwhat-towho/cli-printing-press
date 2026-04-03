@@ -84,6 +84,9 @@ type Entry struct {
 	// ClientPattern describes the HTTP client pattern needed. Empty defaults to "rest".
 	// Values: rest, proxy-envelope, graphql.
 	ClientPattern string `yaml:"client_pattern,omitempty"`
+	// ProxyRoutes maps path prefixes to backend service names for proxy-envelope APIs.
+	// Only relevant when ClientPattern is "proxy-envelope".
+	ProxyRoutes map[string]string `yaml:"proxy_routes,omitempty"`
 }
 
 func ParseEntry(data []byte) (*Entry, error) {

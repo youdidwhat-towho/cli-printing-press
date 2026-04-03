@@ -973,12 +973,10 @@ func checkCommandTree(dir string) CommandTreeResult {
 		}
 		matches := cmdFuncRe.FindAllStringSubmatch(string(data), -1)
 		for _, match := range matches {
-			// Convert CamelCase function name part to lowercase command name.
-			// e.g., newAuthLoginCmd -> "authlogin" but we also store original.
-			// The convention is that the command name is the lowercase version
-			// of the captured group, e.g., AuthLogin -> "auth login" or "auth-login".
-			// We'll normalize to lowercase for matching against help output.
-			cmdName := strings.ToLower(match[1])
+			// Convert CamelCase function name to kebab-case command name.
+			// e.g., newApiGetCategoryCmd -> "api-get-category"
+			// This matches cobra's command naming convention in help output.
+			cmdName := camelToKebab(match[1])
 			definedCmds[cmdName] = struct{}{}
 		}
 	}
@@ -1020,7 +1018,7 @@ func checkCommandTree(dir string) CommandTreeResult {
 	}
 
 	for cmdName := range definedCmds {
-		if strings.Contains(helpLower, cmdName) {
+		if commandFoundInHelp(helpLower, cmdName) {
 			result.Registered++
 		} else {
 			result.Unregistered = append(result.Unregistered, cmdName)
@@ -1028,6 +1026,27 @@ func checkCommandTree(dir string) CommandTreeResult {
 	}
 	sort.Strings(result.Unregistered)
 	return result
+}
+
+// commandFoundInHelp checks if a command name (kebab-case) appears in help output.
+// For compound names like "api-get-category", the function name encodes the parent-child
+// hierarchy (newApiGetCategoryCmd → api-get-category), but help output shows them
+// separately: "api" at top level and "get-category" in the api subcommand help.
+// This function checks the full name first, then progressively strips leading segments
+// to match subcommand names in their parent's help output.
+func commandFoundInHelp(helpLower, cmdName string) bool {
+	if strings.Contains(helpLower, cmdName) {
+		return true
+	}
+	// Try suffix matching: "api-get-category" → "get-category" → "category"
+	parts := strings.SplitN(cmdName, "-", 2)
+	for len(parts) == 2 && parts[1] != "" {
+		if strings.Contains(helpLower, parts[1]) {
+			return true
+		}
+		parts = strings.SplitN(parts[1], "-", 2)
+	}
+	return false
 }
 
 // extractCommandNames extracts command names from cobra --help output.

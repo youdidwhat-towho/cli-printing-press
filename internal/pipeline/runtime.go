@@ -452,6 +452,18 @@ func syntheticArgValue(name string) string {
 		return "/mock/path"
 	case "query", "search", "name":
 		return "mock-query"
+	case "type", "entity-type", "entity", "kind":
+		return "collection"
+	case "resource", "resource-type":
+		return "items"
+	case "format", "output-format":
+		return "json"
+	case "category", "slug":
+		return "general"
+	case "action", "command", "operation":
+		return "list"
+	case "status", "state":
+		return "active"
 	default:
 		return "mock-value"
 	}

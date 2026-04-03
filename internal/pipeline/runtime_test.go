@@ -218,3 +218,29 @@ func main() {}
 	assert.Equal(t, filepath.Join(dir, "sample-pp-cli-2"), binaryPath)
 	assert.FileExists(t, binaryPath)
 }
+
+func TestSyntheticArgValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected string
+	}{
+		{"type", "collection"},
+		{"entity-type", "collection"},
+		{"resource", "items"},
+		{"format", "json"},
+		{"category", "general"},
+		{"action", "list"},
+		{"status", "active"},
+		// Existing mappings still work
+		{"query", "mock-query"},
+		{"id", "12345"},
+		{"region", "mock-city"},
+		// Unknown falls back to mock-value
+		{"unknown-placeholder", "mock-value"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, syntheticArgValue(tt.name))
+		})
+	}
+}

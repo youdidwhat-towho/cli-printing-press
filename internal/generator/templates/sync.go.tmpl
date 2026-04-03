@@ -294,18 +294,18 @@ type paginationDefaults struct {
 }
 
 // determinePaginationDefaults returns the pagination parameter names to use.
-// Uses sensible defaults matching common API conventions.
+// Values are detected from the API spec by the profiler at generation time.
 func determinePaginationDefaults() paginationDefaults {
 	return paginationDefaults{
-		cursorParam: "after",
-		limitParam:  "limit",
-		limit:       100,
+		cursorParam: "{{if .Pagination.CursorParam}}{{.Pagination.CursorParam}}{{else}}after{{end}}",
+		limitParam:  "{{if .Pagination.PageSizeParam}}{{.Pagination.PageSizeParam}}{{else}}limit{{end}}",
+		limit:       {{if .Pagination.DefaultPageSize}}{{.Pagination.DefaultPageSize}}{{else}}100{{end}},
 	}
 }
 
 // determineSinceParam returns the query parameter name for incremental sync filtering.
 func determineSinceParam() string {
-	return "since"
+	return "{{if .Pagination.SinceParam}}{{.Pagination.SinceParam}}{{else}}since{{end}}"
 }
 
 // extractPageItems attempts to extract an array of items and pagination cursor from a response.
