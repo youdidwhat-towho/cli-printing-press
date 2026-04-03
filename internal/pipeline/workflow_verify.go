@@ -49,7 +49,7 @@ func RunWorkflowVerification(dir string) (*WorkflowVerifyReport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("building CLI binary: %w", err)
 	}
-	defer os.Remove(binary)
+	defer func() { _ = os.Remove(binary) }()
 
 	report := &WorkflowVerifyReport{
 		Dir: dir,
@@ -335,7 +335,7 @@ func parseSegment(seg string) (name string, idx int, hasIdx bool) {
 	m := arrayIndexRe.FindStringSubmatch(seg)
 	if m != nil {
 		idx := 0
-		fmt.Sscanf(m[2], "%d", &idx)
+		_, _ = fmt.Sscanf(m[2], "%d", &idx)
 		return m[1], idx, true
 	}
 	return seg, 0, false
