@@ -3,14 +3,6 @@
 > **When to read:** This file is referenced by Phase 1.7 of the printing-press skill.
 > Read it when the user approves sniff (browser-use or agent-browser capture of live API traffic).
 
-### Cardinal Rules
-
-1. **ALWAYS use browser-use for capture.** Do NOT substitute curl probing, JS bundle grepping, or agent-browser auto-connect for a proper browser-use interactive sniff. Agent-browser is for session transfer only (grabbing cookies from a running Chrome). The capture — browsing pages, collecting URLs, intercepting requests — MUST use browser-use.
-
-2. **Do NOT skip auth discovery when the session expires.** *(Only applies when `AUTH_SESSION_AVAILABLE=true` — the user confirmed they're logged in.)* If a Chrome profile loads but the session has expired (login page visible instead of account page), offer headed login as a fallback. Never proceed without auth just because the profile session was stale. For anonymous sniffs (no auth context), this rule does not apply.
-
-3. **Use click-based SPA navigation after installing interceptors.** `browser-use open` triggers a full page reload which resets the JS context and destroys fetch/XHR interceptors. After installing interceptors, navigate by clicking links (`browser-use eval "document.querySelector('a[href*=account]').click()"` or `browser-use click`). Only use `browser-use open` for the first page load or when you need to re-install interceptors.
-
 ### If user approves sniff
 
 #### Sniff Pacing
@@ -178,14 +170,15 @@ if pgrep -x "Google Chrome" >/dev/null 2>&1; then
 fi
 ```
 
-**When Chrome IS running**, use agent-browser to grab cookies, then ask the user to quit Chrome so browser-use can load the profile for capture:
+**When Chrome IS running**, prefer agent-browser (attaches to live browser without closing it):
 
 Present via `AskUserQuestion`:
-> "Chrome is running. I'll grab your cookies, then need you to quit Chrome so I can sniff with full page access."
+> "Chrome is running. I can attach to it and grab your session."
 >
-> 1. **Grab session, then quit Chrome** (Recommended) — "I save your cookies via agent-browser, you quit Chrome, then I sniff with browser-use using your profile. Full DOM access."
-> 2. **Log in within a new browser window** — "I'll open a visible browser. You log in, then I sniff. ~1 minute."
-> 3. **I'll export a HAR file** — "You browse the site in DevTools, export the HAR."
+> 1. **Grab session from your Chrome** (Recommended) — "Saves your cookies, then sniffs in a separate headless browser. Chrome stays untouched."
+> 2. **Sniff in your Chrome directly** — "Stays connected to your real Chrome. You'll see pages changing during the sniff (~60-90 seconds). Simplest approach — no daemon juggling."
+> 3. **Log in within a new browser window** — "I'll open a visible browser. You log in, then I sniff. ~1 minute."
+> 4. **I'll export a HAR file** — "You browse the site in DevTools, export the HAR."
 
 For option 1 (save-then-restore):
 
@@ -203,10 +196,19 @@ agent-browser --state "$DISCOVERY_DIR/session-state.json" open <url>
 ```
 If auto-connect fails (no debug port), explain: "Chrome doesn't have remote debugging enabled. Quit Chrome and relaunch with `--remote-debugging-port=9222`, or pick option 2."
 
-For option 1 after cookies are saved and Chrome is quit:
+For option 2 (stay in auto-connect mode):
 ```bash
-# Start browser-use with the Chrome profile (has all saved cookies/logins)
-browser-use --profile "Default" open <url>
+# Stay connected to the user's real Chrome — all cookies are already present
+agent-browser --auto-connect open <url>
+agent-browser network har start
+# ... browse pages (user will see their Chrome tabs changing) ...
+agent-browser network har stop <path>
+# No close/restart needed — daemon stays connected to real Chrome
+```
+
+For option 1 with browser-use (if agent-browser not available):
+```bash
+browser-use open <url> --connect
 ```
 
 **When Chrome is NOT running**, prefer browser-use (loads real Chrome profile with all cookies):
@@ -226,16 +228,9 @@ If browser-use is not available, fall back to agent-browser headed login.
 
 If Chrome profile lock error occurs (Chrome is actually running): "Chrome's profile is locked. Quit Chrome first, or switch to option 2."
 
-**Session transfer vs capture are separate concerns.** Use agent-browser for session transfer only (grabbing cookies from a running Chrome). Always use browser-use for the actual capture (Steps 2a.*) because it has full DOM access via eval, scroll, click, and snapshot. Agent-browser's auto-connect mode cannot access the DOM or run eval — it can navigate and record HAR but cannot interact with pages.
-
-Recommended flow when Chrome IS running:
-1. Use agent-browser `--auto-connect state save` to grab cookies
-2. Close agent-browser daemon
-3. Ask user to quit Chrome
-4. Start browser-use `--profile "Default"` for capture (loads the same cookies via the Chrome profile)
-
-When Chrome is NOT running:
-- Use browser-use `--profile "Default"` directly for both session and capture
+**When both tools are available**, recommend the situationally better one:
+- Chrome running: prefer agent-browser `--auto-connect`
+- Chrome not running: prefer browser-use `--profile "Default"`
 
 **For headed login (option 2 with either tool):**
 ```bash
@@ -269,27 +264,10 @@ If no target-domain cookies are found, present via `AskUserQuestion`:
 
 > "Session transfer failed — no `<target-domain>` cookies found in the browser. The sniff would run unauthenticated."
 >
-> 1. **Log in manually** — "I'll open a headed browser. You log in, then I sniff."
-> 2. **Continue without auth** — "Sniff only public endpoints"
-> 3. **Provide HAR manually** — "Export a HAR yourself from browser DevTools"
-
-**After loading a Chrome profile**, also verify the session is actually active on the target site. Cookies may exist but be expired:
-
-```bash
-# Navigate to the site and check for login indicators
-browser-use eval "var login=document.querySelector('a[href*=login],a[href*=signin],[class*=sign-in],[class*=login-btn]');
-var account=document.querySelector('a[href*=account],a[href*=profile],[class*=logged-in],[class*=user-menu]');
-login && !account ? 'SESSION_EXPIRED' : account ? 'SESSION_ACTIVE' : 'UNKNOWN'"
-```
-
-If the result is `SESSION_EXPIRED` (login link visible, no account link), the profile cookies have expired. Present via `AskUserQuestion`:
-
-> "Your browser session for `<site>` has expired (login page visible). I need a fresh login to discover authenticated endpoints."
->
-> 1. **Open headed browser to log in** (Recommended) — "I'll open a visible browser. You log in, then I continue the sniff."
-> 2. **Continue without auth** — "Sniff only public endpoints"
-
-Do NOT silently proceed without auth when the session has expired. The authenticated surface is often the most valuable part of the API (order history, rewards, saved data).
+> 1. **Try auto-connect mode instead** — "Stay connected to your real Chrome where you're already logged in"
+> 2. **Log in manually** — "I'll open a headed browser. You log in, then I sniff."
+> 3. **Continue without auth** — "Sniff only public endpoints"
+> 4. **Provide HAR manually** — "Export a HAR yourself from browser DevTools"
 
 If cookies are verified, proceed to Steps 2a/2b capture flow with the authenticated session loaded. The session state file is stored at `$DISCOVERY_DIR/session-state.json`.
 
@@ -349,79 +327,11 @@ When the user confirmed a logged-in session (AUTH_SESSION_AVAILABLE=true from Ph
    - Endpoints that appear in both public and auth visits → classify as **public**
    - Record the classification in the discovery report's Endpoints table (add an "Auth" column)
 
-5. **Discover the auth header pattern.** Many SPAs don't send cookies directly — they read tokens from cookies/localStorage and construct an `Authorization` header. Install an XHR header interceptor and trigger a client-side navigation (click a link — do NOT use `browser-use open`) to capture the actual request headers:
+5. **Trigger cookie auth validation.** If any auth-required endpoints were found, Step 2d (Cookie auth validation) MUST run to verify that cookie replay works. This is what propagates `Auth.Type=cookie` and `CookieDomain` into the spec.
 
-   ```bash
-   # Install header interceptor
-   browser-use eval "window.__authHeaders={};
-   const _s=XMLHttpRequest.prototype.setRequestHeader;
-   XMLHttpRequest.prototype.setRequestHeader=function(k,v){
-     if(k.toLowerCase()==='authorization')window.__authHeaders[k]=v.substring(0,100);
-     _s.apply(this,arguments)};'OK'"
-
-   # Navigate via SPA click (preserves interceptor)
-   browser-use eval "document.querySelector('a[href*=account],a[href*=orders],a[href*=rewards]').click()"
-   sleep 3
-
-   # Collect captured auth headers
-   browser-use eval "JSON.stringify(window.__authHeaders)"
-   ```
-
-   **If an Authorization header is found:**
-   - Record the scheme (e.g., `Bearer`, `PagliacciAuth`, `Token`, custom)
-   - **Trace values back to cookies.** Read `document.cookie` and match literal values from the captured header against cookie values:
-     ```bash
-     browser-use eval "document.cookie"
-     ```
-     For each cookie `name=value`, check if `value` appears as a substring in the Authorization header. When a match is found, record the cookie name and which part of the header it corresponds to.
-   - **Construct the format string.** Replace each literal cookie value in the header with `{cookieName}`:
-     - Example: header `PagliacciAuth 2432962|FD44DA6A-...`, cookies `customerId=2432962; authToken=FD44DA6A-...`
-     - Format string: `PagliacciAuth {customerId}|{authToken}`
-   - **Write composed auth into the spec.** When building the spec YAML, include:
-     ```yaml
-     auth:
-       type: composed
-       header: Authorization
-       format: "<format string with {cookieName} placeholders>"
-       cookie_domain: <site domain>
-       cookies:
-         - <cookie1Name>
-         - <cookie2Name>
-     ```
-     This tells the generator to emit `auth login --chrome` that reads those specific cookies and composes the header. The user never sees the format — the CLI handles it.
-   - Also check localStorage for token sources:
-     ```bash
-     browser-use eval "JSON.stringify(Object.keys(localStorage).filter(k=>k.match(/token|auth|session/i)))"
-     ```
-   - Use the composed header in Step 2d validation (not cookie replay — construct the actual header from extracted cookies)
-   - Record the auth scheme in the discovery report
-
-   **If cookie matching fails** (header values don't match any cookie values — possibly URL-encoded or hashed), fall back to recording the auth scheme without composed config. The printed CLI will use generic token auth. Report: "Auth header discovered but could not trace values to cookies."
-
-   **If no Authorization header found** but auth endpoints returned data (from step 4), the API likely uses cookie-based auth directly. Write `auth.type: cookie` into the spec and proceed to Step 2d with cookie replay.
-
-   **If the interceptor captured nothing** (page didn't fire API calls), try clicking a different link or scrolling the page. If still nothing after 2 attempts, proceed to Step 2d with cookie replay as a fallback.
-
-6. **Trigger auth validation.** If any auth-required endpoints were found, Step 2d (Cookie/token auth validation) MUST run. Use whichever auth method was discovered in step 5:
-   - If an Authorization header was found → replay with that header
-   - If no header found → try cookie replay
-   This is what propagates `Auth.Type` and auth config into the spec.
-
-7. **If auth pages redirect to login.** The session may have expired between the time the user confirmed login and the sniff reaches this step. Report: "Auth pages redirected to login — session may have expired. Auth-only endpoints not discovered." Do NOT fail the sniff — the public endpoints are still valid. Proceed to Step 2a.2 with the public set only.
+6. **If auth pages redirect to login.** The session may have expired between the time the user confirmed login and the sniff reaches this step. Report: "Auth pages redirected to login — session may have expired. Auth-only endpoints not discovered." Do NOT fail the sniff — the public endpoints are still valid. Proceed to Step 2a.2 with the public set only.
 
 **SPA interaction rule:** On each page/state, take a snapshot first. Look for interactive elements (buttons, forms, dropdowns, tabs). Click through them. SPAs fire API calls on interaction, not on page load. If you load a page and see no XHR activity, that means you need to interact with the page, not that there is nothing to find.
-
-**SPA navigation rule:** After installing fetch/XHR interceptors, do NOT use `browser-use open` to navigate between pages — it triggers a full page reload which destroys the interceptors. Instead, navigate by clicking links:
-```bash
-# Good: SPA navigation preserves interceptors
-browser-use eval "document.querySelector('a[href*=\"/orders\"]').click()"
-# or
-browser-use click "Orders"
-
-# Bad: full reload destroys interceptors
-browser-use open "https://site.com/orders"
-```
-Only use `browser-use open` for the initial page load (before interceptors exist) or when you intentionally want to re-install interceptors on a fresh page.
 
 **Step 2a.2: Collect API URLs**
 
@@ -498,51 +408,6 @@ After collecting URLs, check whether the site uses a GraphQL BFF pattern. This i
 4. **Feed into spec building.** When building the OpenAPI spec from discovered operations, each GraphQL operation becomes a spec path: `POST /graphql#OperationName`. The operation name goes in `operationId`. Variables become request body properties. This is compatible with the existing generator — it sees each operation as a distinct POST endpoint.
 
 **If NOT a GraphQL BFF:** Skip this step. The existing URL-based discovery flow handles REST APIs.
-
-**Step 2a.2.7: JS bundle endpoint extraction (supplementary)**
-
-SPA frameworks (Angular, React, Vue, Next.js) compile all API endpoint paths into their main JS bundle. Extracting these paths supplements the sniff with endpoints that no user flow visits (admin features, migration tools, rarely-used settings).
-
-**When to run:** After completing the interactive sniff (Steps 2a.1–2a.2.5). This is supplementary — the sniff is primary because it provides response shapes, auth patterns, and parameter types. Bundle extraction only gives endpoint paths.
-
-**Skip when:** The site is server-rendered HTML without JS bundles, or the sniff already discovered 20+ endpoints and the API surface appears complete.
-
-1. **Find the main bundle:**
-   ```bash
-   browser-use eval "Array.from(document.querySelectorAll('script[src]')).map(s=>s.src).filter(s=>s.includes(location.hostname)&&(s.includes('main')||s.includes('app'))).join('\\n')"
-   ```
-
-2. **Download and extract API paths:**
-   ```bash
-   curl -s "<bundle-url>" | python3 -c "
-   import sys, re
-   content = sys.stdin.read()
-   
-   # Find the API base URL config (common patterns)
-   base_match = re.search(r'(apiUrl|baseUrl|API_URL)[^\"]*\"(https?://[^\"]+)\"', content)
-   if base_match:
-       print(f'API base: {base_match.group(2)}')
-   
-   # Extract capitalized path segments (API routes)
-   paths = re.findall(r'\"(/[A-Z][a-zA-Z]+(?:/[A-Z]?[a-zA-Z]*)*)\"|\"(/[a-z]+/[a-zA-Z]+)\"', content)
-   unique = sorted(set(p[0] or p[1] for p in paths if p[0] or p[1]))
-   for p in unique:
-       print(f'  {p}')
-   
-   # Extract HTTP method calls
-   calls = re.findall(r'\.(get|post|put|delete|patch)\([^)]*\"(/[A-Za-z][A-Za-z0-9/\${}]+)', content)
-   for method, path in sorted(set(calls)):
-       print(f'  {method.upper()} {path}')
-   "
-   ```
-
-3. **Merge with sniff results.** Append bundle-discovered endpoints to `$SNIFF_URLS`. Mark their provenance:
-   ```bash
-   # Append bundle-only endpoints (not already in sniff-urls.txt)
-   # In the discovery report, mark these as "discovered: bundle"
-   ```
-
-4. **Record API config.** If the bundle reveals useful config (API version headers, auth token construction, rate limit hints), note them in the discovery report's Sniff Configuration section.
 
 **Step 2a.3: Deduplicate and normalize**
 
@@ -715,6 +580,4 @@ The report must contain these sections:
 
 7. **Rate Limiting Events** — Any 429 responses encountered, delays applied, and effective sniff rate achieved (e.g., "Sniffed 7 endpoints at ~1.5 req/s effective rate, one 429 at request #4").
 
-8. **Authentication Context** — Whether the sniff used an authenticated session. If yes: transfer method used (auto-connect / profile / headed login / HAR), which endpoints were only reachable with auth (e.g., "order history, saved addresses, rewards required login"), the auth header scheme discovered (e.g., "Authorization: PagliacciAuth {customerId}|{authToken}", "Bearer token from localStorage"), and confirmation that session state was excluded from manuscript archiving. If no: "No authenticated session used."
-
-9. **Bundle Extraction** — If JS bundle extraction ran (Step 2a.2.7), list: the bundle URL analyzed, the API base URL discovered, endpoints found only in the bundle (not during interactive sniff), and any API config extracted (version headers, auth construction patterns). If bundle extraction did not run, omit this section.
+8. **Authentication Context** — Whether the sniff used an authenticated session. If yes: transfer method used (auto-connect / profile / headed login / HAR), which endpoints were only reachable with auth (e.g., "order history, saved addresses, rewards required login"), and confirmation that session state was excluded from manuscript archiving. If no: "No authenticated session used."
