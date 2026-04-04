@@ -113,6 +113,13 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"envName":  func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
 		"safeName": safeSQLName,
+		"safeJoin": func(fields []string, sep string) string {
+			safe := make([]string, len(fields))
+			for i, f := range fields {
+				safe[i] = safeSQLName(f)
+			}
+			return strings.Join(safe, sep)
+		},
 		"goLiteral": func(v any) string {
 			switch val := v.(type) {
 			case string:

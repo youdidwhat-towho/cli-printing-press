@@ -98,14 +98,12 @@ func Execute() error {
 	}
 
 {{- range $name, $resource := .Resources}}
-{{- if not (index $.PromotedResourceNames $name)}}
+{{- if and (not (index $.PromotedResourceNames $name)) (ne $name "auth")}}
 	rootCmd.AddCommand(new{{camel $name}}Cmd(&flags))
 {{- end}}
 {{- end}}
 	rootCmd.AddCommand(newDoctorCmd(&flags))
-{{- if not (index .Resources "auth")}}
 	rootCmd.AddCommand(newAuthCmd(&flags))
-{{- end}}
 {{- if .VisionSet.Export}}
 	rootCmd.AddCommand(newExportCmd(&flags))
 {{- end}}
