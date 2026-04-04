@@ -562,6 +562,7 @@ func sanitizeJSONResponse(body []byte) []byte {
 	return body
 }
 
+
 func truncateBody(b []byte) string {
 	s := string(b)
 	if len(s) > 200 {

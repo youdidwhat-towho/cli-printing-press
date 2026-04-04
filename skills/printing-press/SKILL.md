@@ -1252,22 +1252,29 @@ printing-press lock release --cli <api>-pp-cli
 ```
 The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to Phase 5.5 to archive manuscripts (archiving still happens on hold).
 
-## Phase 5: Optional Live Smoke
+## Phase 5: Dogfood Testing
 
-Only run this if a token is available and the user agreed.
+**MANDATORY when an API key is available.** This is where you use the CLI as an
+actual user would — not just "does it start" but "does it produce correct, useful
+output for real workflows."
 
-Use read-only smoke tests:
-- `--help`
-- one or two representative GET/list commands
-- sync/search/health path if a local data layer exists
+Shipcheck verified the CLI builds and commands respond. Dogfood verifies it
+actually works.
 
-If live smoke finds bugs:
-- fix only the real bug
-- re-run the shipcheck block once
+Read and follow [references/dogfood-testing.md](references/dogfood-testing.md) for
+the complete dogfood protocol: depth selection (quick check vs full lifecycle),
+test plan execution, inline fix workflow, and reporting.
+
+**Key rules:**
+- Fix issues as you find them, not at the end. The value is discovering bugs in
+  context.
+- Note whether each fix is CLI-specific or a machine issue (feeds the retro).
+- If a fix changes the sync, data layer, or output pipeline, re-run the relevant
+  shipcheck tool (`verify` or `scorecard`) once after all dogfood fixes.
 
 Write:
 
-`$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-live-smoke.md`
+`$PROOFS_DIR/<stamp>-fix-<api>-pp-cli-dogfood.md`
 
 ## Phase 5.5: Promote and Archive
 
