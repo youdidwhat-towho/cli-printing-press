@@ -946,7 +946,49 @@ Proceed silently to Phase 2.
 
 ## Phase 2: Generate
 
-Use the resolved spec source and generate immediately.
+### Pre-Generation Auth Enrichment
+
+Before generating, check whether the resolved spec has auth. This matters most for
+sniffed and crowd-sniffed specs where the mechanical auth detection may have failed
+(e.g., session expired during sniff, SDK didn't expose auth patterns).
+
+**Check the spec:**
+- For internal YAML specs: look for `auth:` section with `type:` not equal to `"none"`
+- For OpenAPI specs: look for `components.securitySchemes` or `security` sections
+
+**If auth is missing** (`type: none` or no auth section) AND Phase 1 research found
+auth signals, enrich the spec before generation:
+
+1. Check the research brief for auth mentions (Bearer, API key, token, cookie, OAuth)
+2. Check Phase 1.5a MCP source code analysis for auth patterns (header names, token formats)
+3. Check Phase 1.6 Pre-Sniff Auth Intelligence results (if the user confirmed auth)
+
+If any source identified auth, **edit the spec YAML** to add the auth section before
+running generate. For internal YAML specs:
+
+```yaml
+auth:
+  type: bearer_token    # or api_key, depending on what research found
+  header: Authorization # or the specific header from MCP source
+  in: header
+  env_vars:
+    - <API_NAME>_TOKEN  # bearer_token → _TOKEN, api_key → _API_KEY
+```
+
+For OpenAPI specs, add an `info.description` mention if one doesn't exist — the
+parser's `inferDescriptionAuth` will detect it automatically.
+
+**Why enrich before generation, not after:** The generator's templates (config, client,
+doctor, auth, README) all read `Auth.*` fields from the spec. Patching config.go after
+generation only fixes env var support — it misses the doctor auth check, client auth
+header, README auth section, and auth command setup. Enriching the spec means every
+template produces correct auth from the start.
+
+**When to skip:** If the API genuinely doesn't need auth (ESPN public endpoints, weather
+APIs, public data feeds), don't invent auth. The signal must come from research — not
+from guessing. No research mention of auth = no enrichment.
+
+### Lock and Generate
 
 Before running any generate command, acquire the build lock:
 
@@ -1059,13 +1101,13 @@ Cookbook. When rewriting the README for this API during Phase 3, **preserve all 
 You may add additional sections that help users of this specific API (e.g., "Rate Limits",
 "Pagination", "Authentication Setup"), but never remove the standard ones.
 
-**REQUIRED: Compensate for missing auth.** Check if the generated `config.go` has auth
-env var support (look for `os.Getenv` calls for API key variables). If not, check the
-Phase 1 research brief for auth requirements. If the brief identifies an API key, token,
-or auth method that the spec didn't declare, add the appropriate env var support to
-`config.go`. Use the pattern: add `APIKey`/`APIKeySource` fields to the Config struct,
-and `os.Getenv("<API>_API_KEY")` in the Load function. The research brief is the
-authoritative source when the spec is silent on auth.
+**REQUIRED: Verify auth was generated.** Check if the generated `config.go` has auth
+env var support (look for `os.Getenv` calls for API key variables). If the
+pre-generation auth enrichment ran correctly, this should already be present. If not
+(enrichment was missed or the spec was ambiguous), this is the safety net: check the
+Phase 1 research brief for auth requirements and manually add env var support to
+`config.go` using the pattern: add `APIKey`/`APIKeySource` fields to the Config struct,
+and `os.Getenv("<API>_API_KEY")` in the Load function.
 
 After the description rewrite, update the lock heartbeat:
 
