@@ -48,6 +48,7 @@ type AuthConfig struct {
 	Scopes           []string `yaml:"scopes,omitempty" json:"scopes,omitempty"`
 	CookieDomain     string   `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
 	Cookies          []string `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
+	Inferred         bool     `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
 }
 
 type ConfigSpec struct {

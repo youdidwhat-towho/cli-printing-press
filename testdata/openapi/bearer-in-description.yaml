@@ -1,0 +1,31 @@
+openapi: "3.0.0"
+info:
+  title: Bearer Auth API
+  version: "1.0.0"
+  description: >
+    This API uses Bearer token authentication. Include your API key in
+    the Authorization header as a Bearer token. Get your key from the
+    dashboard at https://example.com/settings/api-keys.
+servers:
+  - url: https://api.example.com/v1
+paths:
+  /v1/users:
+    get:
+      operationId: getUsers
+      summary: List users
+      responses:
+        "200":
+          description: OK
+  /v1/users/{id}:
+    get:
+      operationId: getUser
+      summary: Get user by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: OK

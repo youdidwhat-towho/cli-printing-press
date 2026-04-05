@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/getkin/kin-openapi/openapi3"
 	"github.com/mvanhorn/cli-printing-press/internal/generator"
 	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
@@ -476,5 +477,87 @@ func TestDetectRequiredHeaders(t *testing.T) {
 	t.Run("authorization header excluded even if required on all ops", func(t *testing.T) {
 		headers := detectRequiredHeaders(nil, spec.AuthConfig{})
 		assert.Empty(t, headers)
+	})
+}
+
+func TestInferDescriptionAuth(t *testing.T) {
+	t.Parallel()
+
+	t.Run("bearer in description, no securitySchemes", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "bearer-in-description.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.Equal(t, "bearer_token", parsed.Auth.Type)
+		assert.Equal(t, "Authorization", parsed.Auth.Header)
+		assert.Equal(t, "header", parsed.Auth.In)
+		assert.True(t, parsed.Auth.Inferred)
+		assert.NotEmpty(t, parsed.Auth.EnvVars)
+		assert.Contains(t, parsed.Auth.EnvVars[0], "_TOKEN")
+	})
+
+	t.Run("petstore has explicit auth, not inferred", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "petstore.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.False(t, parsed.Auth.Inferred)
+		assert.NotEqual(t, "none", parsed.Auth.Type)
+	})
+
+	t.Run("stytch has explicit auth, not inferred", func(t *testing.T) {
+		data, err := os.ReadFile(filepath.Join("..", "..", "testdata", "openapi", "stytch.yaml"))
+		require.NoError(t, err)
+
+		parsed, err := Parse(data)
+		require.NoError(t, err)
+
+		assert.False(t, parsed.Auth.Inferred)
+	})
+
+	t.Run("no auth keywords in description stays none", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "A simple API for managing widgets and gadgets.",
+			},
+		}
+		result := inferDescriptionAuth(doc, "widgets", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "none", result.Type)
+		assert.False(t, result.Inferred)
+	})
+
+	t.Run("negation suppresses inference", func(t *testing.T) {
+		result := inferDescriptionAuth(nil, "test", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "none", result.Type)
+
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "This API does not require Bearer authentication",
+			},
+		}
+		result = inferDescriptionAuth(doc, "test", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "none", result.Type, "negated 'Bearer' should not trigger inference")
+		assert.False(t, result.Inferred)
+	})
+
+	t.Run("api_key keyword produces api_key type", func(t *testing.T) {
+		doc := &openapi3.T{
+			Info: &openapi3.Info{
+				Description: "Authenticate with your API key in the Authorization header",
+			},
+		}
+		result := inferDescriptionAuth(doc, "example", spec.AuthConfig{Type: "none"})
+		assert.Equal(t, "api_key", result.Type)
+		assert.Equal(t, "EXAMPLE_API_KEY", result.EnvVars[0])
+		assert.True(t, result.Inferred)
+	})
+
+	t.Run("nil doc returns fallback", func(t *testing.T) {
+		fb := spec.AuthConfig{Type: "none"}
+		assert.Equal(t, fb, inferDescriptionAuth(nil, "test", fb))
 	})
 }
