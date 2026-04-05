@@ -1050,12 +1050,29 @@ func evaluateAuthProtocol(dir string, spec *openAPISpecInfo) dimensionScore {
 	if spec == nil {
 		return dimensionScore{}
 	}
-	if len(spec.SecurityRequirements) == 0 {
-		return dimensionScore{}
-	}
-
 	clientContent := readFileContent(filepath.Join(dir, "internal", "client", "client.go"))
 	configContent := readFileContent(filepath.Join(dir, "internal", "config", "config.go"))
+
+	if len(spec.SecurityRequirements) == 0 {
+		// No securitySchemes in spec — check if auth was inferred from description.
+		// Inferred auth generates env var support in config.go without declaring
+		// securitySchemes. Detect it by checking for os.Getenv patterns.
+		if !strings.Contains(configContent, "os.Getenv(") {
+			return dimensionScore{} // genuinely no auth
+		}
+		// Auth was inferred — score based on what the CLI actually has
+		score := 0
+		if strings.Contains(configContent, "os.Getenv(") {
+			score += 4 // env var support present
+		}
+		if strings.Contains(clientContent, "Authorization") {
+			score += 3 // client sends auth header
+		}
+		if strings.Contains(configContent, "Auth inferred") {
+			score += 1 // annotated as inferred (user knows to verify)
+		}
+		return dimensionScore{scored: true, score: score}
+	}
 	authContent := readFileContent(filepath.Join(dir, "internal", "cli", "auth.go"))
 	if clientContent == "" {
 		return dimensionScore{scored: true}
