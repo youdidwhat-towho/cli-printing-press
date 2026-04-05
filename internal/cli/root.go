@@ -220,11 +220,13 @@ func newGenerateCmd() *cobra.Command {
 			}
 
 			var specs []*spec.APISpec
+			var specRawBytes [][]byte // raw spec data for archiving
 			for _, specFile := range specFiles {
 				data, err := readSpec(specFile, refresh, dryRun)
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("reading spec %s: %w", specFile, err)}
 				}
+				specRawBytes = append(specRawBytes, data)
 
 				var apiSpec *spec.APISpec
 				if openapi.IsOpenAPI(data) {
@@ -341,6 +343,19 @@ func newGenerateCmd() *cobra.Command {
 				OutputDir: absOut,
 			}); err != nil {
 				fmt.Fprintf(os.Stderr, "warning: could not write manifest: %v\n", err)
+			}
+
+			// Archive the input spec alongside the CLI for reproducibility.
+			// The spec_url may change or disappear; this local copy is the
+			// only guaranteed way to regenerate from the exact same input.
+			if len(specRawBytes) > 0 {
+				archiveName := "spec.json"
+				if len(specFiles) > 0 && !openapi.IsOpenAPI(specRawBytes[0]) {
+					archiveName = "spec.yaml"
+				}
+				if err := os.WriteFile(filepath.Join(absOut, archiveName), specRawBytes[0], 0o644); err != nil {
+					fmt.Fprintf(os.Stderr, "warning: could not archive spec: %v\n", err)
+				}
 			}
 
 			fmt.Fprintf(os.Stderr, "Generated %s at %s\n", naming.CLI(apiSpec.Name), absOut)
