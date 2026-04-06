@@ -184,6 +184,14 @@ func RunScorecard(outputDir, pipelineDir, specPath string, verifyReport *VerifyR
 	// Gap report for dimensions below 5
 	sc.GapReport = buildGapReport(sc.Steinberger, sc.UnscoredDimensions)
 
+	// MCP tool split from manifest (informational, does not affect score)
+	if manifest, err := loadCLIManifestForScorecard(outputDir); err == nil && manifest.MCPBinary != "" {
+		authCount := manifest.MCPToolCount - manifest.MCPPublicToolCount
+		sc.GapReport = append(sc.GapReport,
+			fmt.Sprintf("MCP: %d tools (%d public, %d auth-required) — readiness: %s",
+				manifest.MCPToolCount, manifest.MCPPublicToolCount, authCount, manifest.MCPReady))
+	}
+
 	// Competitor comparison from research.json
 	sc.CompetitorScores = buildCompetitorScores(sc.Steinberger.Total, pipelineDir)
 
@@ -1727,6 +1735,21 @@ func computeGrade(percentage int) string {
 	default:
 		return "F"
 	}
+}
+
+// loadCLIManifestForScorecard reads .printing-press.json from the CLI directory.
+// Returns an empty manifest (not error) if the file does not exist, so callers
+// can check MCPBinary != "" to decide whether to show MCP info.
+func loadCLIManifestForScorecard(outputDir string) (CLIManifest, error) {
+	data, err := os.ReadFile(filepath.Join(outputDir, CLIManifestFilename))
+	if err != nil {
+		return CLIManifest{}, err
+	}
+	var m CLIManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return CLIManifest{}, err
+	}
+	return m, nil
 }
 
 func buildGapReport(s SteinerScore, unscored []string) []string {

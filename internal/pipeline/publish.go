@@ -110,6 +110,12 @@ func PublishWorkingCLI(state *PipelineState, targetDir string) (string, error) {
 		return "", err
 	}
 
+	// Generate smithery.yaml for MCP marketplace listing if applicable.
+	if err := writeSmitheryYAML(finalDir); err != nil {
+		// Non-blocking: log warning but don't fail the publish.
+		fmt.Fprintf(os.Stderr, "warning: could not write smithery.yaml: %v\n", err)
+	}
+
 	if err := state.Save(); err != nil {
 		return "", err
 	}
@@ -212,6 +218,53 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 	}
 
 	return WriteCLIManifest(dir, m)
+}
+
+// writeSmitheryYAML generates a smithery.yaml marketplace metadata file
+// alongside the CLI manifest. Reads .printing-press.json from dir to get
+// MCP metadata. Skips writing if MCPReady is "cli-only" or if no MCP
+// metadata is present.
+func writeSmitheryYAML(dir string) error {
+	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
+	if err != nil {
+		return nil // no manifest, nothing to do
+	}
+	var m CLIManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return fmt.Errorf("parsing manifest for smithery: %w", err)
+	}
+	if m.MCPBinary == "" || m.MCPReady == "cli-only" {
+		return nil // no MCP or cli-only — skip
+	}
+
+	var sb strings.Builder
+	sb.WriteString("name: " + m.MCPBinary + "\n")
+	desc := m.Description
+	if desc == "" {
+		desc = m.APIName + " API"
+	}
+	sb.WriteString("description: \"" + desc + "\"\n")
+	sb.WriteString("startCommand:\n")
+	sb.WriteString("  command: ./" + m.MCPBinary + "\n")
+
+	if len(m.AuthEnvVars) > 0 && m.AuthType != "cookie" && m.AuthType != "composed" {
+		sb.WriteString("env:\n")
+		for _, envVar := range m.AuthEnvVars {
+			sb.WriteString("  " + envVar + ":\n")
+			sb.WriteString("    description: \"" + m.APIName + " API credential\"\n")
+			sb.WriteString("    required: true\n")
+		}
+	} else if len(m.AuthEnvVars) > 0 {
+		// Cookie/composed: env vars are optional (some tools work without)
+		sb.WriteString("env:\n")
+		for _, envVar := range m.AuthEnvVars {
+			sb.WriteString("  " + envVar + ":\n")
+			sb.WriteString("    description: \"Required for authenticated endpoints only — some tools work without credentials\"\n")
+			sb.WriteString("    required: false\n")
+		}
+	}
+
+	return os.WriteFile(filepath.Join(dir, "smithery.yaml"), []byte(sb.String()), 0o644)
 }
 
 func CopyDir(src, dst string) error {
