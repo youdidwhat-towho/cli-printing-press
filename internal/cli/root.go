@@ -33,9 +33,8 @@ func Execute() error {
 	rootCmd := &cobra.Command{
 		Use:           "printing-press",
 		Short:         "Describe your API. Get a production CLI.",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		Version:       version.Version,
+		SilenceUsage: true,
+		Version:      version.Version,
 	}
 	rootCmd.SetVersionTemplate("printing-press {{.Version}}\n")
 

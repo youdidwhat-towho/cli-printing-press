@@ -42,9 +42,8 @@ func Execute() error {
 	rootCmd := &cobra.Command{
 		Use:           "{{.Name}}-pp-cli",
 		Short:         "Manage {{.Name}} resources via the {{.Name}} API",
-		SilenceUsage:  true,
-		SilenceErrors: true,
-		Version:       version,
+		SilenceUsage: true,
+		Version:      version,
 	}
 	rootCmd.SetVersionTemplate("{{.Name}}-pp-cli {{"{{"}} .Version {{"}}"}}\n")
 
