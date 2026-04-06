@@ -409,6 +409,85 @@ func TestGeneratedOutput_READMESourcesSection(t *testing.T) {
 	})
 }
 
+func TestGeneratedOutput_READMENovelFeaturesSection(t *testing.T) {
+	t.Parallel()
+
+	minSpec := &spec.APISpec{
+		Name:    "testapi",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"TESTAPI_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/testapi-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"items": {Description: "Items", Endpoints: map[string]spec.Endpoint{
+				"list": {Method: "GET", Path: "/items", Description: "List items"},
+			}},
+		},
+	}
+
+	t.Run("section appears with novel features", func(t *testing.T) {
+		outputDir := filepath.Join(t.TempDir(), "testapi-pp-cli")
+		gen := New(minSpec, outputDir)
+		gen.NovelFeatures = []NovelFeature{
+			{Name: "Health dashboard", Command: "health", Description: "See scheduling health metrics at a glance", Rationale: "Requires correlating bookings and schedules in the local store"},
+			{Name: "Stale triage", Command: "triage", Description: "Find unconfirmed bookings older than N days", Rationale: "No existing tool offers batch triage"},
+		}
+		require.NoError(t, gen.Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		content := string(readme)
+		assert.Contains(t, content, "## What's New Here")
+		assert.Contains(t, content, "### `testapi-pp-cli health`")
+		assert.Contains(t, content, "### `testapi-pp-cli triage`")
+		assert.Contains(t, content, "See scheduling health metrics at a glance")
+		assert.Contains(t, content, "> Requires correlating bookings and schedules in the local store")
+	})
+
+	t.Run("section absent with no novel features", func(t *testing.T) {
+		outputDir := filepath.Join(t.TempDir(), "testapi-pp-cli")
+		gen := New(minSpec, outputDir)
+		require.NoError(t, gen.Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		assert.NotContains(t, string(readme), "What's New Here")
+	})
+
+	t.Run("single novel feature still renders section", func(t *testing.T) {
+		outputDir := filepath.Join(t.TempDir(), "testapi-pp-cli")
+		gen := New(minSpec, outputDir)
+		gen.NovelFeatures = []NovelFeature{
+			{Name: "Health dashboard", Command: "health", Description: "Metrics at a glance", Rationale: "Local data only"},
+		}
+		require.NoError(t, gen.Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		assert.Contains(t, string(readme), "## What's New Here")
+	})
+
+	t.Run("novel features appear before sources", func(t *testing.T) {
+		outputDir := filepath.Join(t.TempDir(), "testapi-pp-cli")
+		gen := New(minSpec, outputDir)
+		gen.NovelFeatures = []NovelFeature{
+			{Name: "Health dashboard", Command: "health", Description: "Metrics", Rationale: "Local data"},
+		}
+		gen.Sources = []ReadmeSource{
+			{Name: "a", URL: "https://github.com/org/a", Stars: 100},
+			{Name: "b", URL: "https://github.com/org/b", Stars: 50},
+		}
+		require.NoError(t, gen.Generate())
+
+		readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+		require.NoError(t, err)
+		content := string(readme)
+		novelIdx := strings.Index(content, "What's New Here")
+		sourcesIdx := strings.Index(content, "Sources & Inspiration")
+		assert.Greater(t, sourcesIdx, novelIdx, "Novel features should appear before Sources")
+	})
+}
+
 func TestGeneratedOutput_MutatingCommandsHaveEnvelope(t *testing.T) {
 	t.Parallel()
 

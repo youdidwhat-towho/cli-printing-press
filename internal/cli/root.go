@@ -673,9 +673,9 @@ func printDryRun(apiSpec *spec.APISpec, absOut string, specFiles []string) error
 	return enc.Encode(summary)
 }
 
-// loadResearchSources populates the generator's Sources and DiscoveryPages
-// from a pipeline research directory. Silently skips if researchDir is empty
-// or data is unavailable.
+// loadResearchSources populates the generator's Sources, DiscoveryPages, and
+// NovelFeatures from a pipeline research directory. Silently skips if
+// researchDir is empty or data is unavailable.
 func loadResearchSources(gen *generator.Generator, researchDir string) {
 	if researchDir == "" {
 		return
@@ -688,6 +688,25 @@ func loadResearchSources(gen *generator.Generator, researchDir string) {
 				URL:      s.URL,
 				Language: s.Language,
 				Stars:    s.Stars,
+			})
+		}
+		// Prefer verified (built) novel features over the aspirational list.
+		// novel_features_built is written by dogfood after validating which
+		// planned features actually survived the build. A nil pointer means
+		// dogfood hasn't run yet (fall back to planned). A non-nil pointer
+		// to an empty slice means dogfood ran and nothing survived (show nothing).
+		var novelSrc []pipeline.NovelFeature
+		if research.NovelFeaturesBuilt != nil {
+			novelSrc = *research.NovelFeaturesBuilt
+		} else {
+			novelSrc = research.NovelFeatures
+		}
+		for _, nf := range novelSrc {
+			gen.NovelFeatures = append(gen.NovelFeatures, generator.NovelFeature{
+				Name:        nf.Name,
+				Command:     nf.Command,
+				Description: nf.Description,
+				Rationale:   nf.Rationale,
 			})
 		}
 	}

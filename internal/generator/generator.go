@@ -33,6 +33,14 @@ type ReadmeSource struct {
 	Stars    int
 }
 
+// NovelFeature represents a transcendence feature for the README.
+type NovelFeature struct {
+	Name        string
+	Command     string
+	Description string
+	Rationale   string
+}
+
 type Generator struct {
 	Spec           *spec.APISpec
 	OutputDir      string
@@ -40,6 +48,7 @@ type Generator struct {
 	FixtureSet     *websniff.FixtureSet
 	Sources        []ReadmeSource // Ecosystem tools to credit in README
 	DiscoveryPages []string       // Pages visited during sniff discovery
+	NovelFeatures  []NovelFeature // Transcendence features for README
 	profile        *profiler.APIProfile
 	funcs          template.FuncMap
 	templates      map[string]*template.Template
@@ -239,6 +248,7 @@ type readmeTemplateData struct {
 	*spec.APISpec
 	Sources        []ReadmeSource
 	DiscoveryPages []string
+	NovelFeatures  []NovelFeature
 }
 
 func (g *Generator) readmeData() *readmeTemplateData {
@@ -252,6 +262,7 @@ func (g *Generator) readmeData() *readmeTemplateData {
 		APISpec:        g.Spec,
 		Sources:        g.Sources,
 		DiscoveryPages: g.DiscoveryPages,
+		NovelFeatures:  g.NovelFeatures,
 	}
 }
 

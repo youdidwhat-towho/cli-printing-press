@@ -29,6 +29,20 @@ type ResearchResult struct {
 	Recommendation     string              `json:"recommendation"` // "proceed", "proceed-with-gaps", "skip"
 	ResearchedAt       time.Time           `json:"researched_at"`
 	CompetitorInsights *CompetitorInsights `json:"competitor_insights,omitempty"`
+	NovelFeatures      []NovelFeature      `json:"novel_features,omitempty"`
+	// NovelFeaturesBuilt is the verified subset written by dogfood. Intentionally
+	// NOT omitempty: an empty [] means "dogfood ran, nothing survived" while a
+	// missing field means "dogfood hasn't validated yet."
+	NovelFeaturesBuilt *[]NovelFeature `json:"novel_features_built,omitempty"`
+}
+
+// NovelFeature represents a transcendence feature invented during the absorb
+// phase — a capability not found in any existing tool for this API.
+type NovelFeature struct {
+	Name        string `json:"name"`
+	Command     string `json:"command"`
+	Description string `json:"description"`
+	Rationale   string `json:"rationale"`
 }
 
 // CompetitorAnalysis holds intelligence gathered from a single competitor repo.
@@ -167,6 +181,19 @@ func LoadResearch(pipelineDir string) (*ResearchResult, error) {
 		return nil, err
 	}
 	return &r, nil
+}
+
+// WriteNovelFeaturesBuilt updates research.json with the verified list of
+// novel features that survived the build. The original novel_features field
+// is preserved as-is (the planned list); novel_features_built records what
+// actually exists in the CLI.
+func WriteNovelFeaturesBuilt(pipelineDir string, built []NovelFeature) error {
+	research, err := LoadResearch(pipelineDir)
+	if err != nil {
+		return err
+	}
+	research.NovelFeaturesBuilt = &built
+	return writeResearchJSON(research, pipelineDir)
 }
 
 // ReadmeSource represents a credited ecosystem tool for the generated README.

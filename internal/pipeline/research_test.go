@@ -233,6 +233,84 @@ func TestWriteAndLoadResearchWithCompetitorInsights(t *testing.T) {
 	assert.Equal(t, []string{"JSON output"}, loaded.CompetitorInsights.UnmetFeatures)
 }
 
+func TestWriteAndLoadResearchWithNovelFeatures(t *testing.T) {
+	dir := t.TempDir()
+	result := &ResearchResult{
+		APIName:        "test-api",
+		NoveltyScore:   8,
+		Recommendation: "proceed",
+		NovelFeatures: []NovelFeature{
+			{
+				Name:        "Health dashboard",
+				Command:     "health",
+				Description: "See scheduling health metrics at a glance",
+				Rationale:   "Requires correlating bookings, schedules, and staff data in the local store",
+			},
+			{
+				Name:        "Stale booking triage",
+				Command:     "triage",
+				Description: "Find and act on unconfirmed bookings older than N days",
+				Rationale:   "No existing tool offers batch triage of pending bookings",
+			},
+		},
+	}
+
+	err := writeResearchJSON(result, dir)
+	require.NoError(t, err)
+
+	loaded, err := LoadResearch(dir)
+	require.NoError(t, err)
+	require.Len(t, loaded.NovelFeatures, 2)
+	assert.Equal(t, "Health dashboard", loaded.NovelFeatures[0].Name)
+	assert.Equal(t, "health", loaded.NovelFeatures[0].Command)
+	assert.Equal(t, "See scheduling health metrics at a glance", loaded.NovelFeatures[0].Description)
+	assert.Equal(t, "Requires correlating bookings, schedules, and staff data in the local store", loaded.NovelFeatures[0].Rationale)
+	assert.Equal(t, "Stale booking triage", loaded.NovelFeatures[1].Name)
+}
+
+func TestWriteAndLoadResearchWithoutNovelFeatures(t *testing.T) {
+	dir := t.TempDir()
+	result := &ResearchResult{
+		APIName:        "test-api",
+		NoveltyScore:   5,
+		Recommendation: "proceed",
+	}
+
+	err := writeResearchJSON(result, dir)
+	require.NoError(t, err)
+
+	loaded, err := LoadResearch(dir)
+	require.NoError(t, err)
+	assert.Nil(t, loaded.NovelFeatures)
+}
+
+func TestWriteNovelFeaturesBuilt(t *testing.T) {
+	dir := t.TempDir()
+	// Write initial research with planned features
+	result := &ResearchResult{
+		APIName: "test-api",
+		NovelFeatures: []NovelFeature{
+			{Name: "Health", Command: "health", Description: "Metrics", Rationale: "Local data"},
+			{Name: "Triage", Command: "triage", Description: "Find stale", Rationale: "Batch ops"},
+		},
+	}
+	require.NoError(t, writeResearchJSON(result, dir))
+
+	// Write verified subset
+	built := []NovelFeature{
+		{Name: "Health", Command: "health", Description: "Metrics", Rationale: "Local data"},
+	}
+	require.NoError(t, WriteNovelFeaturesBuilt(dir, built))
+
+	// Load and verify both lists are present
+	loaded, err := LoadResearch(dir)
+	require.NoError(t, err)
+	assert.Len(t, loaded.NovelFeatures, 2, "planned list preserved")
+	require.NotNil(t, loaded.NovelFeaturesBuilt)
+	assert.Len(t, *loaded.NovelFeaturesBuilt, 1, "built list is verified subset")
+	assert.Equal(t, "health", (*loaded.NovelFeaturesBuilt)[0].Command)
+}
+
 func TestFetchIssuesWithMockServer(t *testing.T) {
 	issues := []ghIssue{
 		{Title: "Add dark mode", Body: "Please add dark mode support"},

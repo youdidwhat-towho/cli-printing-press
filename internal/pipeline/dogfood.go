@@ -19,17 +19,27 @@ import (
 )
 
 type DogfoodReport struct {
-	Dir           string             `json:"dir"`
-	SpecPath      string             `json:"spec_path,omitempty"`
-	Verdict       string             `json:"verdict"`
-	PathCheck     PathCheckResult    `json:"path_check"`
-	AuthCheck     AuthCheckResult    `json:"auth_check"`
-	DeadFlags     DeadCodeResult     `json:"dead_flags"`
-	DeadFuncs     DeadCodeResult     `json:"dead_functions"`
-	PipelineCheck PipelineResult     `json:"pipeline_check"`
-	ExampleCheck  ExampleCheckResult `json:"example_check"`
-	WiringCheck   WiringCheckResult  `json:"wiring_check"`
-	Issues        []string           `json:"issues"`
+	Dir                string                   `json:"dir"`
+	SpecPath           string                   `json:"spec_path,omitempty"`
+	Verdict            string                   `json:"verdict"`
+	PathCheck          PathCheckResult          `json:"path_check"`
+	AuthCheck          AuthCheckResult          `json:"auth_check"`
+	DeadFlags          DeadCodeResult           `json:"dead_flags"`
+	DeadFuncs          DeadCodeResult           `json:"dead_functions"`
+	PipelineCheck      PipelineResult           `json:"pipeline_check"`
+	ExampleCheck       ExampleCheckResult       `json:"example_check"`
+	WiringCheck        WiringCheckResult        `json:"wiring_check"`
+	NovelFeaturesCheck NovelFeaturesCheckResult `json:"novel_features_check"`
+	Issues             []string                 `json:"issues"`
+}
+
+// NovelFeaturesCheckResult tracks whether transcendence features planned
+// during absorb actually survived the build as registered CLI commands.
+type NovelFeaturesCheckResult struct {
+	Planned int      `json:"planned"`
+	Found   int      `json:"found"`
+	Missing []string `json:"missing,omitempty"`
+	Skipped bool     `json:"skipped,omitempty"`
 }
 
 type PathCheckResult struct {
@@ -101,7 +111,12 @@ type openAPISpec struct {
 	Auth  apispec.AuthConfig
 }
 
-func RunDogfood(dir, specPath string) (*DogfoodReport, error) {
+func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, error) {
+	cfg := dogfoodConfig{}
+	for _, o := range opts {
+		o(&cfg)
+	}
+
 	report := &DogfoodReport{
 		Dir:      dir,
 		SpecPath: specPath,
@@ -130,6 +145,7 @@ func RunDogfood(dir, specPath string) (*DogfoodReport, error) {
 	report.PipelineCheck = checkPipelineIntegrity(dir)
 	report.ExampleCheck = checkExamples(dir)
 	report.WiringCheck = checkWiring(dir)
+	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
 	report.Issues = collectDogfoodIssues(report, spec != nil)
 	report.Verdict = deriveDogfoodVerdict(report, spec != nil)
 
@@ -138,6 +154,85 @@ func RunDogfood(dir, specPath string) (*DogfoodReport, error) {
 	}
 
 	return report, nil
+}
+
+type dogfoodConfig struct {
+	researchDir string
+}
+
+// DogfoodOption configures optional behavior for RunDogfood.
+type DogfoodOption func(*dogfoodConfig)
+
+// WithResearchDir provides the pipeline directory containing research.json
+// so dogfood can validate novel features against registered commands.
+func WithResearchDir(dir string) DogfoodOption {
+	return func(c *dogfoodConfig) {
+		c.researchDir = dir
+	}
+}
+
+// checkNovelFeatures validates that transcendence features from research.json
+// have corresponding registered commands in the generated CLI. It also writes
+// the verified list back as novel_features_built so downstream consumers
+// (README, publish) only claim what actually exists.
+func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
+	if researchDir == "" {
+		return NovelFeaturesCheckResult{Skipped: true}
+	}
+	research, err := LoadResearch(researchDir)
+	if err != nil || len(research.NovelFeatures) == 0 {
+		return NovelFeaturesCheckResult{Skipped: true}
+	}
+
+	// Build set of registered command Use: names from the CLI source.
+	registeredCmds := collectRegisteredCommands(cliDir)
+
+	result := NovelFeaturesCheckResult{
+		Planned: len(research.NovelFeatures),
+	}
+	built := make([]NovelFeature, 0)
+	for _, nf := range research.NovelFeatures {
+		// The command field may be a subcommand path like "issues stale".
+		// Check if the leaf command name is registered.
+		parts := strings.Fields(nf.Command)
+		leaf := parts[len(parts)-1]
+		if registeredCmds[leaf] {
+			result.Found++
+			built = append(built, nf)
+		} else {
+			result.Missing = append(result.Missing, nf.Command)
+		}
+	}
+
+	// Write the verified list back to research.json so the README and
+	// publish steps only reference features that actually exist.
+	if err := WriteNovelFeaturesBuilt(researchDir, built); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: could not write novel_features_built: %v\n", err)
+	}
+
+	return result
+}
+
+// collectRegisteredCommands returns a set of cobra Use: names found in the
+// CLI's internal/cli/*.go files.
+func collectRegisteredCommands(dir string) map[string]bool {
+	cliDir := filepath.Join(dir, "internal", "cli")
+	files := listGoFiles(cliDir)
+	useFieldRe := regexp.MustCompile(`(?m)Use:\s*"([^"\s]+)`)
+	cmds := make(map[string]bool)
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		for _, m := range useFieldRe.FindAllStringSubmatch(string(data), -1) {
+			name := strings.Fields(m[1])[0]
+			if name != "" {
+				cmds[name] = true
+			}
+		}
+	}
+	return cmds
 }
 
 func LoadDogfoodResults(dir string) (*DogfoodReport, error) {
@@ -588,6 +683,9 @@ func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
 	if len(report.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 {
 		return "WARN"
 	}
+	if len(report.NovelFeaturesCheck.Missing) > 0 {
+		return "WARN"
+	}
 	return "PASS"
 }
 
@@ -633,6 +731,12 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		issues = append(issues, fmt.Sprintf("%d unmapped workflow steps: %s",
 			len(report.WiringCheck.WorkflowComplete.UnmappedSteps),
 			strings.Join(report.WiringCheck.WorkflowComplete.UnmappedSteps, ", ")))
+	}
+	if len(report.NovelFeaturesCheck.Missing) > 0 {
+		issues = append(issues, fmt.Sprintf("%d/%d novel features missing: %s",
+			len(report.NovelFeaturesCheck.Missing),
+			report.NovelFeaturesCheck.Planned,
+			strings.Join(report.NovelFeaturesCheck.Missing, ", ")))
 	}
 	return issues
 }

@@ -14,6 +14,7 @@ import (
 func newDogfoodCmd() *cobra.Command {
 	var dir string
 	var specPath string
+	var researchDir string
 	var asJSON bool
 
 	cmd := &cobra.Command{
@@ -26,7 +27,11 @@ func newDogfoodCmd() *cobra.Command {
   # Output as JSON for programmatic use
   printing-press dogfood --dir ./generated/stripe-pp-cli --json`,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			report, err := pipeline.RunDogfood(dir, specPath)
+			var opts []pipeline.DogfoodOption
+			if researchDir != "" {
+				opts = append(opts, pipeline.WithResearchDir(researchDir))
+			}
+			report, err := pipeline.RunDogfood(dir, specPath, opts...)
 			if err != nil {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running dogfood: %w", err)}
 			}
@@ -44,6 +49,7 @@ func newDogfoodCmd() *cobra.Command {
 
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to the generated CLI directory (required)")
 	cmd.Flags().StringVar(&specPath, "spec", "", "Path to the OpenAPI spec file")
+	cmd.Flags().StringVar(&researchDir, "research-dir", "", "Pipeline directory containing research.json for novel features validation")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
 	_ = cmd.MarkFlagRequired("dir")
 	return cmd
@@ -146,6 +152,23 @@ func printDogfoodReport(report *pipeline.DogfoodReport) {
 		fmt.Printf(" (%s)\n", exampleStatus)
 		for _, cmd := range report.ExampleCheck.Missing {
 			fmt.Printf("  - %s: missing example\n", cmd)
+		}
+	}
+	fmt.Println()
+
+	nfc := report.NovelFeaturesCheck
+	if nfc.Skipped {
+		fmt.Println("Novel Features:    SKIP (no research.json)")
+	} else if nfc.Planned == 0 {
+		fmt.Println("Novel Features:    SKIP (none planned)")
+	} else {
+		nfStatus := "PASS"
+		if len(nfc.Missing) > 0 {
+			nfStatus = "WARN"
+		}
+		fmt.Printf("Novel Features:    %d/%d survived (%s)\n", nfc.Found, nfc.Planned, nfStatus)
+		for _, cmd := range nfc.Missing {
+			fmt.Printf("  - %s: planned but not found\n", cmd)
 		}
 	}
 	fmt.Println()

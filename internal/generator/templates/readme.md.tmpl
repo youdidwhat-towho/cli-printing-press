@@ -207,6 +207,19 @@ Environment variables:
 - If persistent, wait a few minutes and try again
 
 ---
+{{- if .NovelFeatures}}
+
+## What's New Here
+
+These capabilities don't exist in any other tool for this API.
+{{range .NovelFeatures}}
+### `{{$.Name}}-pp-cli {{.Command}}`
+
+{{.Description}}
+
+> {{.Rationale}}
+{{end}}
+{{- end}}
 {{- if or (gt (len .Sources) 1) (gt (len .DiscoveryPages) 0)}}
 
 ## Sources & Inspiration

@@ -591,6 +591,156 @@ func TestDeriveDogfoodVerdict_WiringChecks(t *testing.T) {
 	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, true))
 }
 
+func TestCheckNovelFeatures(t *testing.T) {
+	t.Run("skipped when no research dir", func(t *testing.T) {
+		result := checkNovelFeatures(t.TempDir(), "")
+		assert.True(t, result.Skipped)
+	})
+
+	t.Run("skipped when no novel features in research", func(t *testing.T) {
+		researchDir := t.TempDir()
+		research := &ResearchResult{APIName: "test", NoveltyScore: 5}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+		result := checkNovelFeatures(t.TempDir(), researchDir)
+		assert.True(t, result.Skipped)
+	})
+
+	t.Run("finds matching commands", func(t *testing.T) {
+		// Set up a CLI dir with a command file
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+		writeTestFile(t, filepath.Join(cliCodeDir, "triage.go"),
+			`package cli
+func newTriageCmd() *cobra.Command {
+	return &cobra.Command{Use: "triage"}
+}`)
+
+		// Set up research with novel features
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health"},
+				{Name: "Stale triage", Command: "triage"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.False(t, result.Skipped)
+		assert.Equal(t, 2, result.Planned)
+		assert.Equal(t, 2, result.Found)
+		assert.Empty(t, result.Missing)
+
+		// Verify novel_features_built was written back
+		updated, err := LoadResearch(researchDir)
+		require.NoError(t, err)
+		assert.Len(t, updated.NovelFeatures, 2, "planned list preserved")
+		require.NotNil(t, updated.NovelFeaturesBuilt)
+		assert.Len(t, *updated.NovelFeaturesBuilt, 2, "all built")
+	})
+
+	t.Run("detects missing commands and writes verified subset", func(t *testing.T) {
+		cliDir := t.TempDir()
+		cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+		require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+		writeTestFile(t, filepath.Join(cliCodeDir, "health.go"),
+			`package cli
+func newHealthCmd() *cobra.Command {
+	return &cobra.Command{Use: "health"}
+}`)
+
+		researchDir := t.TempDir()
+		research := &ResearchResult{
+			APIName: "test",
+			NovelFeatures: []NovelFeature{
+				{Name: "Health dashboard", Command: "health"},
+				{Name: "Stale triage", Command: "triage"},
+				{Name: "Team util", Command: "team utilization"},
+			},
+		}
+		require.NoError(t, writeResearchJSON(research, researchDir))
+
+		result := checkNovelFeatures(cliDir, researchDir)
+		assert.Equal(t, 3, result.Planned)
+		assert.Equal(t, 1, result.Found)
+		assert.Equal(t, []string{"triage", "team utilization"}, result.Missing)
+
+		// Verify novel_features_built contains only the survivor
+		updated, err := LoadResearch(researchDir)
+		require.NoError(t, err)
+		assert.Len(t, updated.NovelFeatures, 3, "planned list preserved")
+		require.NotNil(t, updated.NovelFeaturesBuilt)
+		require.Len(t, *updated.NovelFeaturesBuilt, 1, "only health survived")
+		assert.Equal(t, "health", (*updated.NovelFeaturesBuilt)[0].Command)
+	})
+}
+
+func TestCheckNovelFeatures_ZeroSurvivors(t *testing.T) {
+	// All planned features missing — novel_features_built should be a non-nil
+	// empty slice (not omitted), so the fallback to the aspirational list
+	// does NOT kick in.
+	cliDir := t.TempDir()
+	cliCodeDir := filepath.Join(cliDir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliCodeDir, 0o755))
+	// No command files — nothing registered
+
+	researchDir := t.TempDir()
+	research := &ResearchResult{
+		APIName: "test",
+		NovelFeatures: []NovelFeature{
+			{Name: "Health", Command: "health"},
+			{Name: "Triage", Command: "triage"},
+		},
+	}
+	require.NoError(t, writeResearchJSON(research, researchDir))
+
+	result := checkNovelFeatures(cliDir, researchDir)
+	assert.Equal(t, 2, result.Planned)
+	assert.Equal(t, 0, result.Found)
+	assert.Len(t, result.Missing, 2)
+
+	// Verify research.json has novel_features_built as non-nil empty
+	updated, err := LoadResearch(researchDir)
+	require.NoError(t, err)
+	assert.Len(t, updated.NovelFeatures, 2, "planned list preserved")
+	require.NotNil(t, updated.NovelFeaturesBuilt, "must be non-nil so fallback doesn't kick in")
+	assert.Empty(t, *updated.NovelFeaturesBuilt, "empty — nothing survived")
+}
+
+func TestDeriveDogfoodVerdict_NovelFeatures(t *testing.T) {
+	base := &DogfoodReport{
+		PathCheck:     PathCheckResult{Tested: 10, Valid: 10, Pct: 100},
+		AuthCheck:     AuthCheckResult{Match: true},
+		DeadFlags:     DeadCodeResult{Dead: 0},
+		DeadFuncs:     DeadCodeResult{Dead: 0},
+		PipelineCheck: PipelineResult{SyncCallsDomain: true},
+		WiringCheck: WiringCheckResult{
+			CommandTree:      CommandTreeResult{Defined: 2, Registered: 2},
+			ConfigConsist:    ConfigConsistResult{Consistent: true},
+			WorkflowComplete: WorkflowCompleteResult{Skipped: true},
+		},
+	}
+
+	// Missing novel features → WARN
+	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 3, Found: 1, Missing: []string{"triage", "utilization"}}
+	assert.Equal(t, "WARN", deriveDogfoodVerdict(base, true))
+
+	// All found → PASS
+	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Planned: 2, Found: 2}
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(base, true))
+
+	// Skipped → PASS (no penalty)
+	base.NovelFeaturesCheck = NovelFeaturesCheckResult{Skipped: true}
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(base, true))
+}
+
 func writeTestFile(t *testing.T, path string, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))

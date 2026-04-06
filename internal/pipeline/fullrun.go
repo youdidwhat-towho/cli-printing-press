@@ -191,7 +191,7 @@ func MakeBestCLI(apiName, level, specFlag, specURL, outputDir, pressBinary strin
 		result.Errors = append(result.Errors, fmt.Sprintf("dogfood build: %v", buildErr))
 	} else {
 		defer func() { _ = os.Remove(cliBinaryPath) }()
-		dogfood, dogErr := RunDogfood(workingDir, qualitySpecPath)
+		dogfood, dogErr := RunDogfood(workingDir, qualitySpecPath, WithResearchDir(researchDir))
 		if dogErr != nil {
 			result.DogfoodError = dogErr.Error()
 			result.Errors = append(result.Errors, fmt.Sprintf("dogfood: %v", dogErr))
