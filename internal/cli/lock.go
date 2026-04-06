@@ -230,10 +230,12 @@ func newLockPromoteCmd() *cobra.Command {
 				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--dir must be a directory")}
 			}
 
-			// Try to find state by working dir.
+			// Try to find state by working dir. For plan-driven CLIs that
+			// skipped generate, no runstate entry exists - fall back to a
+			// minimal state so promote still works.
 			state, err := pipeline.FindStateByWorkingDir(dir)
 			if err != nil {
-				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("finding pipeline state: %w", err)}
+				state = pipeline.NewMinimalState(cliName, dir)
 			}
 
 			if err := pipeline.PromoteWorkingCLI(cliName, dir, state); err != nil {

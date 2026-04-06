@@ -300,6 +300,20 @@ func FindStateByWorkingDir(dir string) (*PipelineState, error) {
 	return nil, fmt.Errorf("no runstate entry for working dir %s", absDir)
 }
 
+// NewMinimalState creates a lightweight state for CLIs that skipped the
+// generate pipeline (e.g. plan-driven CLIs). It carries enough metadata
+// for promote to copy the directory and write a manifest.
+func NewMinimalState(cliName, workingDir string) *PipelineState {
+	return &PipelineState{
+		Version:    currentStateVersion,
+		APIName:    cliName,
+		WorkingDir: workingDir,
+		OutputDir:  workingDir,
+		StartedAt:  time.Now(),
+		Phases:     make(map[string]PhaseState),
+	}
+}
+
 // NewState creates a fresh pipeline state.
 func NewState(apiName, outputDir string) *PipelineState {
 	runID, err := newRunID(time.Now())

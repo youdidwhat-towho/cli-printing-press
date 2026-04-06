@@ -394,6 +394,39 @@ func TestPromoteWorkingCLI_ReleasesLockWhenStateSaveFails(t *testing.T) {
 	assert.True(t, os.IsNotExist(err))
 }
 
+func TestPromoteWorkingCLI_MinimalStateNoRunstate(t *testing.T) {
+	tmp := t.TempDir()
+	t.Setenv("PRINTING_PRESS_HOME", tmp)
+	t.Setenv("PRINTING_PRESS_SCOPE", "test-scope")
+	t.Setenv("PRINTING_PRESS_REPO_ROOT", tmp)
+
+	// Create a working directory with content (simulating plan-driven CLI).
+	workDir := filepath.Join(tmp, "working", "test-pp-cli")
+	require.NoError(t, os.MkdirAll(workDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "go.mod"), []byte("module test-pp-cli\n\ngo 1.21\n"), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(workDir, "main.go"), []byte("package main\nfunc main() {}\n"), 0o644))
+
+	// Use NewMinimalState (no RunID, no prior runstate entry).
+	state := NewMinimalState("test-pp-cli", workDir)
+
+	err := PromoteWorkingCLI("test-pp-cli", workDir, state)
+	require.NoError(t, err)
+
+	// Verify library dir exists with copied content.
+	libDir := filepath.Join(PublishedLibraryRoot(), "test-pp-cli")
+	_, err = os.Stat(filepath.Join(libDir, "go.mod"))
+	assert.NoError(t, err)
+	_, err = os.Stat(filepath.Join(libDir, "main.go"))
+	assert.NoError(t, err)
+
+	// Verify manifest was written.
+	_, err = os.Stat(filepath.Join(libDir, CLIManifestFilename))
+	assert.NoError(t, err)
+
+	// Verify state was updated with library path.
+	assert.Equal(t, libDir, state.PublishedDir)
+}
+
 func TestIsStale(t *testing.T) {
 	fresh := &LockState{UpdatedAt: time.Now()}
 	assert.False(t, IsStale(fresh))
