@@ -12,6 +12,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/internal/version"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"gopkg.in/yaml.v3"
 )
 
 func TestWriteCLIManifest(t *testing.T) {
@@ -447,6 +448,120 @@ func TestArchiveRunArtifactsSkipsMissingDiscovery(t *testing.T) {
 
 	// Research should still be archived
 	assert.DirExists(t, ArchivedResearchDir(state.APIName, state.RunID))
+}
+
+func TestComputeMCPReady(t *testing.T) {
+	tests := []struct {
+		name        string
+		authType    string
+		publicTools int
+		want        string
+	}{
+		{"none", "none", 0, "full"},
+		{"api_key", "api_key", 0, "full"},
+		{"bearer_token", "bearer_token", 0, "full"},
+		{"oauth2 defaults to full", "oauth2", 0, "full"},
+		{"cookie with public tools", "cookie", 3, "partial"},
+		{"cookie no public tools", "cookie", 0, "cli-only"},
+		{"composed with public tools", "composed", 5, "partial"},
+		{"composed no public tools", "composed", 0, "cli-only"},
+		{"empty auth type", "", 0, "full"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := computeMCPReady(tt.authType, tt.publicTools)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestWriteSmitheryYAML(t *testing.T) {
+	t.Run("no manifest file — no smithery written", func(t *testing.T) {
+		dir := t.TempDir()
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+		_, statErr := os.Stat(filepath.Join(dir, "smithery.yaml"))
+		assert.True(t, os.IsNotExist(statErr))
+	})
+
+	t.Run("cli-only readiness — no smithery written", func(t *testing.T) {
+		dir := t.TempDir()
+		m := CLIManifest{MCPBinary: "test-pp-mcp", MCPReady: "cli-only"}
+		data, _ := json.Marshal(m)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+		_, statErr := os.Stat(filepath.Join(dir, "smithery.yaml"))
+		assert.True(t, os.IsNotExist(statErr))
+	})
+
+	t.Run("api_key auth — env vars required", func(t *testing.T) {
+		dir := t.TempDir()
+		m := CLIManifest{
+			MCPBinary:   "stripe-pp-mcp",
+			MCPReady:    "full",
+			AuthType:    "api_key",
+			AuthEnvVars: []string{"STRIPE_API_KEY"},
+			APIName:     "stripe",
+			Description: "Stripe payments API",
+		}
+		data, _ := json.Marshal(m)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
+		require.NoError(t, err)
+		s := string(content)
+		assert.Contains(t, s, "name: stripe-pp-mcp")
+		assert.Contains(t, s, "description: Stripe payments API")
+		assert.Contains(t, s, "STRIPE_API_KEY")
+		assert.Contains(t, s, "required: true")
+	})
+
+	t.Run("cookie auth — env vars optional", func(t *testing.T) {
+		dir := t.TempDir()
+		m := CLIManifest{
+			MCPBinary:   "pizza-pp-mcp",
+			MCPReady:    "partial",
+			AuthType:    "cookie",
+			AuthEnvVars: []string{"PIZZA_AUTH"},
+			APIName:     "pizza",
+		}
+		data, _ := json.Marshal(m)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+
+		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
+		require.NoError(t, err)
+		assert.Contains(t, string(content), "required: false")
+	})
+
+	t.Run("description with special characters is safely escaped", func(t *testing.T) {
+		dir := t.TempDir()
+		m := CLIManifest{
+			MCPBinary:   "test-pp-mcp",
+			MCPReady:    "full",
+			APIName:     "test",
+			Description: `Notion: "All-in-one" workspace & collaboration`,
+		}
+		data, _ := json.Marshal(m)
+		require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
+
+		err := writeSmitheryYAML(dir)
+		require.NoError(t, err)
+
+		// Verify the file is valid YAML by re-parsing it
+		content, err := os.ReadFile(filepath.Join(dir, "smithery.yaml"))
+		require.NoError(t, err)
+		var parsed map[string]interface{}
+		require.NoError(t, yaml.Unmarshal(content, &parsed), "smithery.yaml should be valid YAML even with special chars in description")
+		assert.Contains(t, parsed["description"], "Notion")
+	})
 }
 
 func TestDetectSpecFormat(t *testing.T) {

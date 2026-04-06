@@ -188,3 +188,25 @@ func (s *APISpec) Validate() error {
 	}
 	return nil
 }
+
+// CountMCPTools counts total endpoints and public (NoAuth) endpoints across
+// all resources and sub-resources.
+func (s *APISpec) CountMCPTools() (total, public int) {
+	for _, r := range s.Resources {
+		for _, e := range r.Endpoints {
+			total++
+			if e.NoAuth {
+				public++
+			}
+		}
+		for _, sub := range r.SubResources {
+			for _, e := range sub.Endpoints {
+				total++
+				if e.NoAuth {
+					public++
+				}
+			}
+		}
+	}
+	return
+}

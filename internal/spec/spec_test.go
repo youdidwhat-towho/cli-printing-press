@@ -259,6 +259,39 @@ resources:
 	})
 }
 
+func TestCountMCPTools(t *testing.T) {
+	t.Parallel()
+	s := APISpec{
+		Name:    "test",
+		BaseURL: "http://x",
+		Resources: map[string]Resource{
+			"stores": {
+				Endpoints: map[string]Endpoint{
+					"list": {Method: "GET", Path: "/stores", NoAuth: true},
+					"get":  {Method: "GET", Path: "/stores/{id}", NoAuth: true},
+				},
+				SubResources: map[string]Resource{
+					"menus": {
+						Endpoints: map[string]Endpoint{
+							"list": {Method: "GET", Path: "/stores/{id}/menus", NoAuth: true},
+						},
+					},
+				},
+			},
+			"orders": {
+				Endpoints: map[string]Endpoint{
+					"list":   {Method: "GET", Path: "/orders"},
+					"create": {Method: "POST", Path: "/orders"},
+				},
+			},
+		},
+	}
+
+	total, public := s.CountMCPTools()
+	assert.Equal(t, 5, total, "should count all endpoints including sub-resources")
+	assert.Equal(t, 3, public, "should count only NoAuth endpoints")
+}
+
 // --- Unit 5: YAML Format Safety Net Tests ---
 
 func TestParseBytesYAMLVariations(t *testing.T) {

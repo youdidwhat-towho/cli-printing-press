@@ -619,7 +619,7 @@ func (g *Generator) Generate() error {
 
 	// Render MCP tools registration (needs VisionSet + store data + tool counts for annotations)
 	if g.VisionSet.MCP {
-		mcpTotal, mcpPublic := countMCPTools(g.Spec)
+		mcpTotal, mcpPublic := g.Spec.CountMCPTools()
 		mcpData := struct {
 			*spec.APISpec
 			SyncableResources []profiler.SyncableResource
@@ -1067,27 +1067,6 @@ func oneline(s string) string {
 	return s
 }
 
-// countMCPTools counts total endpoints and public (NoAuth) endpoints.
-func countMCPTools(s *spec.APISpec) (total, public int) {
-	for _, r := range s.Resources {
-		for _, e := range r.Endpoints {
-			total++
-			if e.NoAuth {
-				public++
-			}
-		}
-		for _, sub := range r.SubResources {
-			for _, e := range sub.Endpoints {
-				total++
-				if e.NoAuth {
-					public++
-				}
-			}
-		}
-	}
-	return
-}
-
 // mcpDescription builds an MCP tool description with optional minority-side
 // auth annotation. Only annotates when the CLI has a mix of public and
 // auth-required tools. The minority side gets annotated:
@@ -1099,7 +1078,7 @@ func mcpDescription(desc string, noAuth bool, authType string, publicCount, tota
 	mixed := publicCount > 0 && authCount > 0
 
 	if mixed {
-		if noAuth && publicCount <= authCount {
+		if noAuth && publicCount < authCount {
 			// Public endpoints are the minority — mark them
 			desc = "[No auth] " + desc
 		} else if !noAuth && authCount < publicCount {

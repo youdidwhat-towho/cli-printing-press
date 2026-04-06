@@ -85,28 +85,6 @@ func specChecksum(path string) (string, error) {
 	return "sha256:" + hex.EncodeToString(h[:]), nil
 }
 
-// CountMCPToolsFromSpec counts total endpoints and public (NoAuth) endpoints across
-// all resources and sub-resources in a spec.
-func CountMCPToolsFromSpec(s *spec.APISpec) (total, public int) {
-	for _, r := range s.Resources {
-		for _, e := range r.Endpoints {
-			total++
-			if e.NoAuth {
-				public++
-			}
-		}
-		for _, sub := range r.SubResources {
-			for _, e := range sub.Endpoints {
-				total++
-				if e.NoAuth {
-					public++
-				}
-			}
-		}
-	}
-	return
-}
-
 // computeMCPReady determines the MCP readiness level based on the auth type
 // and the public/total tool split.
 func computeMCPReady(authType string, publicTools int) string {
@@ -205,7 +183,7 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	// Populate MCP metadata from the parsed spec.
 	if p.Spec != nil {
 		m.MCPBinary = naming.MCP(p.Spec.Name)
-		total, public := CountMCPToolsFromSpec(p.Spec)
+		total, public := p.Spec.CountMCPTools()
 		m.MCPToolCount = total
 		m.MCPPublicToolCount = public
 		m.MCPReady = computeMCPReady(p.Spec.Auth.Type, public)
