@@ -30,6 +30,8 @@ func RenameCLI(dir, oldCLIName, newCLIName, originalAPIName string) (int, error)
 	if err := validateRenameInputs(oldCLIName, newCLIName); err != nil {
 		return 0, err
 	}
+	oldMCPName := naming.MCP(naming.TrimCLISuffix(oldCLIName))
+	newMCPName := naming.MCP(naming.TrimCLISuffix(newCLIName))
 
 	// Path traversal protection: verify the directory and new name resolve
 	// within the expected parent.
@@ -78,6 +80,7 @@ func RenameCLI(dir, oldCLIName, newCLIName, originalAPIName string) (int, error)
 		}
 
 		result := strings.ReplaceAll(string(content), oldCLIName, newCLIName)
+		result = strings.ReplaceAll(result, oldMCPName, newMCPName)
 		if result == string(content) {
 			return nil
 		}
@@ -99,6 +102,9 @@ func RenameCLI(dir, oldCLIName, newCLIName, originalAPIName string) (int, error)
 		if jsonErr := json.Unmarshal(manifestData, &m); jsonErr == nil {
 			m.CLIName = newCLIName
 			m.APIName = originalAPIName
+			if m.MCPBinary != "" {
+				m.MCPBinary = newMCPName
+			}
 			if writeErr := WriteCLIManifest(absDir, m); writeErr != nil {
 				return filesModified, fmt.Errorf("updating manifest: %w", writeErr)
 			}
@@ -112,6 +118,15 @@ func RenameCLI(dir, oldCLIName, newCLIName, originalAPIName string) (int, error)
 	if _, err := os.Stat(oldCmdDir); err == nil {
 		if err := os.Rename(oldCmdDir, newCmdDir); err != nil {
 			return filesModified, fmt.Errorf("renaming cmd directory: %w", err)
+		}
+	}
+
+	// 3b. Rename cmd/ MCP subdirectory if it exists.
+	oldMCPDir := filepath.Join(absDir, "cmd", oldMCPName)
+	newMCPDir := filepath.Join(absDir, "cmd", newMCPName)
+	if _, err := os.Stat(oldMCPDir); err == nil {
+		if err := os.Rename(oldMCPDir, newMCPDir); err != nil {
+			return filesModified, fmt.Errorf("renaming MCP cmd directory: %w", err)
 		}
 	}
 

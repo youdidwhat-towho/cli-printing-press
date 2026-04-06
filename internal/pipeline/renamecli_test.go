@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -14,6 +15,7 @@ import (
 // It includes files that should be renamed and files that should survive unchanged.
 func writeTestCLITree(t *testing.T, dir string, cliName, apiName string) {
 	t.Helper()
+	mcpName := naming.MCP(naming.TrimCLISuffix(cliName))
 
 	// cmd/<cli-name>/main.go
 	cmdDir := filepath.Join(dir, "cmd", cliName)
@@ -26,6 +28,17 @@ import (
 
 func main() {
 	cli.Execute()
+}
+`), 0o644))
+
+	// cmd/<mcp-name>/main.go
+	mcpDir := filepath.Join(dir, "cmd", mcpName)
+	require.NoError(t, os.MkdirAll(mcpDir, 0o755))
+	require.NoError(t, os.WriteFile(filepath.Join(mcpDir, "main.go"), []byte(`package main
+
+func main() {
+	serverName := "`+mcpName+`"
+	_ = serverName
 }
 `), 0o644))
 
@@ -64,16 +77,21 @@ func (c *Client) do() {
 project_name: `+cliName+`
 builds:
   - binary: `+cliName+`
+  - binary: `+mcpName+`
     ldflags:
       - -s -w -X `+cliName+`/internal/cli.version={{ .Version }}
 brews:
   - name: `+cliName+`
-    install: bin.install "`+cliName+`"
+    install: |
+      bin.install "`+cliName+`"
+      bin.install "`+mcpName+`"
 `), 0o644))
 
 	// Makefile
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "Makefile"), []byte(`build:
 	go build -o `+cliName+` ./cmd/`+cliName+`
+build-mcp:
+	go build -o `+mcpName+` ./cmd/`+mcpName+`
 `), 0o644))
 
 	// README.md
@@ -86,6 +104,12 @@ CLI for the `+apiName+` API.
 `+"```"+`
 `+cliName+` doctor
 `+cliName+` users list
+`+"```"+`
+
+## MCP
+
+`+"```"+`
+claude mcp add `+apiName+` `+mcpName+`
 `+"```"+`
 `), 0o644))
 
@@ -106,6 +130,7 @@ go 1.24
 		SchemaVersion: 1,
 		APIName:       apiName,
 		CLIName:       cliName,
+		MCPBinary:     mcpName,
 	}
 	data, _ := json.MarshalIndent(m, "", "  ")
 	require.NoError(t, os.WriteFile(filepath.Join(dir, CLIManifestFilename), data, 0o644))
@@ -119,6 +144,8 @@ func TestRenameCLI(t *testing.T) {
 		oldName := "notion-pp-cli"
 		newName := "notion-alt-pp-cli"
 		apiName := "notion"
+		oldMCPName := naming.MCP(naming.TrimCLISuffix(oldName))
+		newMCPName := naming.MCP(naming.TrimCLISuffix(newName))
 
 		cliDir := filepath.Join(root, oldName)
 		require.NoError(t, os.MkdirAll(cliDir, 0o755))
@@ -140,6 +167,10 @@ func TestRenameCLI(t *testing.T) {
 		assert.NoError(t, err, "new cmd directory should exist")
 		_, err = os.Stat(filepath.Join(newDir, "cmd", oldName))
 		assert.ErrorIs(t, err, os.ErrNotExist, "old cmd directory should not exist")
+		_, err = os.Stat(filepath.Join(newDir, "cmd", newMCPName))
+		assert.NoError(t, err, "new MCP cmd directory should exist")
+		_, err = os.Stat(filepath.Join(newDir, "cmd", oldMCPName))
+		assert.ErrorIs(t, err, os.ErrNotExist, "old MCP cmd directory should not exist")
 
 		// root.go should have new name in Use and version template
 		rootGo, err := os.ReadFile(filepath.Join(newDir, "internal", "cli", "root.go"))
@@ -160,28 +191,36 @@ func TestRenameCLI(t *testing.T) {
 		grContent := string(goreleaser)
 		assert.Contains(t, grContent, "project_name: "+newName)
 		assert.Contains(t, grContent, "binary: "+newName)
+		assert.Contains(t, grContent, "binary: "+newMCPName)
 		assert.Contains(t, grContent, `install "`+newName+`"`)
+		assert.Contains(t, grContent, `install "`+newMCPName+`"`)
 		assert.NotContains(t, grContent, oldName)
+		assert.NotContains(t, grContent, oldMCPName)
 
 		// Makefile should have new name
 		makefile, err := os.ReadFile(filepath.Join(newDir, "Makefile"))
 		require.NoError(t, err)
 		assert.Contains(t, string(makefile), newName)
 		assert.NotContains(t, string(makefile), oldName)
+		assert.Contains(t, string(makefile), newMCPName)
+		assert.NotContains(t, string(makefile), oldMCPName)
 
 		// README should have new name
 		readme, err := os.ReadFile(filepath.Join(newDir, "README.md"))
 		require.NoError(t, err)
 		assert.Contains(t, string(readme), "# "+newName)
 		assert.NotContains(t, string(readme), oldName)
+		assert.Contains(t, string(readme), newMCPName)
+		assert.NotContains(t, string(readme), oldMCPName)
 
-		// Manifest should have new cli_name, original api_name
+		// Manifest should have new cli_name, original api_name, and new MCP binary
 		mData, err := os.ReadFile(filepath.Join(newDir, CLIManifestFilename))
 		require.NoError(t, err)
 		var m CLIManifest
 		require.NoError(t, json.Unmarshal(mData, &m))
 		assert.Equal(t, newName, m.CLIName)
 		assert.Equal(t, apiName, m.APIName)
+		assert.Equal(t, newMCPName, m.MCPBinary)
 	})
 
 	t.Run("numeric qualifier renames correctly", func(t *testing.T) {
