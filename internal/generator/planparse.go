@@ -43,15 +43,15 @@ func ParsePlan(content string) *PlanSpec {
 
 	// Patterns for extracting commands
 	// Backtick command in list: - `record` - Description
-	backtickCmd := regexp.MustCompile("^\\s*[-*]\\s+`([^`]+)`\\s*[-:]\\s*(.*)")
+	backtickCmd := regexp.MustCompile(`^\s*[-*]\s+` + "`([^`]+)`" + `\s*[-:]\s*(.*)`)
 	// WU/implementation unit goal line: - **Goal:** description
-	goalLine := regexp.MustCompile("^\\s*[-*]\\s+\\*\\*Goal:\\*\\*\\s*(.*)")
+	goalLine := regexp.MustCompile(`^\s*[-*]\s+\*\*Goal:\*\*\s*(.*)`)
 	// WU heading: ### WU-X: Feature name
-	wuHeading := regexp.MustCompile("^###\\s+WU-\\d+:\\s+(.*)")
+	wuHeading := regexp.MustCompile(`^###\s+WU-\d+:\s+(.*)`)
 	// H1 heading for CLI name
-	h1 := regexp.MustCompile("^#\\s+(.*)")
+	h1 := regexp.MustCompile(`^#\s+(.*)`)
 	// H2 heading for section detection
-	h2 := regexp.MustCompile("^##\\s+(.*)")
+	h2 := regexp.MustCompile(`^##\s+(.*)`)
 
 	var currentSection string
 	var currentWU string
@@ -230,7 +230,7 @@ func looksLikeCommand(s string) bool {
 	parts := strings.Fields(s)
 	for _, part := range parts {
 		for _, r := range part {
-			if !((r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '_') {
+			if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' && r != '_' {
 				return false
 			}
 		}
