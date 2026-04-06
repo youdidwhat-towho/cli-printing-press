@@ -9,7 +9,11 @@ date: 2026-04-05
 
 ## Overview
 
-Add per-endpoint auth awareness to MCP server generation and surface MCP metadata in the public library registry. The printing press already generates companion MCP servers alongside CLIs, but today there is zero signaling about which tools require auth and which work without it. This means: (1) users can't discover MCP servers from the library, (2) agents calling MCP tools get no hint about auth requirements until a 401, and (3) the library misses the MCP marketplace distribution channel entirely.
+**Step 1 of 2** toward a Printing Press Mega MCP — a single installable MCP server that gives agents access to every API in the library.
+
+This plan builds the data layer: per-endpoint auth awareness, MCP metadata in manifests and registry, self-describing `about` tools, marketplace metadata files, and minority-side auth annotations. Every artifact is designed to be consumed by the Mega MCP (Step 2, separate plan) which aggregates all CLIs into one server with catalog discovery and passthrough execution.
+
+Without this plan, the Mega MCP has no data to work with — no way to know which tools need auth, what env vars to check, or which APIs are MCP-ready. Without the Mega MCP, this plan's metadata describes things users can't easily access. Both steps are needed; this one goes first because the data layer must be correct before the access layer is built on top.
 
 This plan covers three layers: machine changes in this repo (generator, parser, templates, manifest, publish), public library repo changes (registry schema, README), and targeted fixups to the 6 existing published CLIs (without regeneration).
 
@@ -289,6 +293,7 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
   - `MCPReady string` (`json:"mcp_ready,omitempty"`) — "full", "partial", or "cli-only"
   - `AuthType string` (`json:"auth_type,omitempty"`) — from spec auth config
   - `AuthEnvVars []string` (`json:"auth_env_vars,omitempty"`) — from spec.Auth.EnvVars
+  - `NovelFeatures []NovelFeatureManifest` (`json:"novel_features,omitempty"`) — transcendence features from `research.json`'s `novel_features_built`. Each entry: `{name, command, description}`. The mega MCP's `library_info` tool surfaces these as highlights.
 
   **Data plumbing for `WriteManifestForGenerate()`:** Add `Spec *spec.APISpec` to `GenerateManifestParams`. Both callers in `root.go` already have the parsed spec in scope — the `--docs` path has `parsed` (line 189) and the `--spec` path has `apiSpec` (line 331). Thread it through. Tool counts are computed by a new helper `countMCPTools(spec *spec.APISpec) (total, public int)` that iterates `spec.Resources` and their sub-resources.
 
@@ -584,23 +589,52 @@ Even cookie-auth CLIs like Pagliacci Pizza have public endpoints (store finder, 
 | Specs that omit security but actually require auth (false public sweep) | Post-parse sweep guarded by `!Auth.Inferred`. Only marks all endpoints public when parser actively concluded no auth exists, not when detection failed. |
 | `oneline()` truncation drops auth annotation on long descriptions | `mcpDescription()` applies annotation then calls `oneline()`. Prepended annotations (`[No auth]`) survive truncation; appended annotations (`(requires API key)`) could be cut on very long descriptions but auth-required is the less common case for this to matter. |
 
-## Future Considerations
+## Contract with Follow-Up Plan: Printing Press Mega MCP
 
-These are planned follow-ups that depend on this plan's output but are separate work:
+This plan is **Step 1 of 2.** It builds the data layer. Step 2 (separate plan) builds the Printing Press Mega MCP — a single MCP server that aggregates all published CLIs into one installable tool with catalog discovery and passthrough execution.
 
-### Mega MCP: Library as a Single MCP Server
+### What the Mega MCP needs from this plan
 
-The public library repo ships a single MCP server (`printing-press-library-pp-mcp`) that aggregates all published CLIs. One install gives agents access to every public endpoint across all APIs. Per-API env vars unlock auth-required tools incrementally. The server uses a generic HTTP handler (same pattern as the generated `makeAPIHandler`) reading from a compiled tool registry built from all specs at build time. Also includes catalog tools (`library_search`, `library_info`, `library_install`) that read `registry.json` to help agents discover and install individual CLIs.
+Every artifact this plan produces is designed to be consumed by the mega MCP:
 
-User journey: `brew install mvanhorn/tap/printing-press-library-pp-mcp` → `claude mcp add pp-library printing-press-library-pp-mcp` → immediately use all public tools across all APIs → `export STEAM_WEB_API_KEY=xxx` to unlock one API → graduate to standalone `steam-web-pp-mcp` if desired.
+| This plan produces | Mega MCP consumes it as |
+|-------------------|------------------------|
+| `registry.json` with `mcp` block per CLI | Backend for `library_search`, `library_info`, `library_install` catalog tools |
+| `NoAuth` on endpoints | Decides which tools work without auth — registered as immediately usable vs gated |
+| `AuthType` + `AuthEnvVars` in manifest | Per-API env var checking at call time — helpful error when env var not set |
+| `MCPReady` levels | Determines which APIs are included in the mega MCP (full/partial yes, cli-only no) |
+| `MCPToolCount` / `MCPPublicToolCount` | `library_info` response: "Steam Web — 164 tools, 80 work without auth" |
+| `about` tool pattern (Unit 3b) | Individual MCP servers have `about`; mega MCP has `library_info` (same data, different scope) |
+| `novel_features_built` in manifest | `library_info` response includes transcendence features as highlights |
+| `smithery.yaml` per CLI | Mega MCP gets its own smithery.yaml; individual CLIs have theirs for standalone listing |
+| Minority-side auth annotations | Same annotation logic applied to mega MCP tool descriptions |
+| `{name}-pp-mcp` naming | Mega MCP: `printing-press-library-pp-mcp`. Individual: `{name}-pp-mcp`. No collision. |
 
-**Depends on:** This plan's registry.json `mcp` block, manifest MCP fields, and per-endpoint `NoAuth` detection.
+### What the Mega MCP will deliver (Step 2)
 
-### Library Reorganization: API-Slug Directories
+- Single binary: `printing-press-library-pp-mcp`
+- Catalog tools: `library_search` (find by name/category/keyword), `library_info` (details + transcendence features + install instructions), `library_install` (CLI and MCP install commands per platform)
+- Passthrough tools: all individual API tools under namespaced names (`steam_web__app_details`, `dub__links_create`), using the same generic `makeAPIHandler` pattern the generator already produces
+- Per-API auth: env vars checked at call time, not startup. Missing env var → helpful error with setup instructions. Public tools work immediately.
+- Cookie-auth APIs: public tools work, auth-required tools return "install the standalone CLI and run `auth login --chrome`"
+- User journey: one `brew install` + one `claude mcp add` → every public tool across all APIs works → set env vars to unlock specific APIs → graduate to standalone MCP if desired
+
+### Design decisions this plan locks in for the mega MCP
+
+These choices in this plan constrain the mega MCP's design. They should not be changed without considering the downstream impact:
+
+1. **`registry.json` schema** — The `mcp` block is the mega MCP's source of truth for which APIs exist and what they need. Fields must be stable.
+2. **`NoAuth` on Endpoint** — The mega MCP registers tools as "works without auth" or "needs env var" based on this flag. The flag must be set correctly by the parser.
+3. **`MCPReady` levels** — The mega MCP only includes `full` and `partial` CLIs. `cli-only` CLIs are excluded (need browser, can't passthrough).
+4. **Manifest `AuthEnvVars`** — The mega MCP checks these env vars at call time per-API. The field must be populated.
+5. **Naming: `{name}-pp-mcp`** — Individual servers use this pattern. The mega MCP uses `printing-press-library-pp-mcp`. No collision.
+6. **`about` tool response shape** — Individual MCP servers return this shape; the mega MCP's `library_info` returns a compatible superset.
+
+### Separate follow-up: Library Reorganization
 
 Rename published CLI directories from `{api}-pp-cli` to `{api-slug}` (e.g., `dub-pp-cli/` → `dub/`). The directory contains both CLI and MCP binaries, so naming it after the CLI is misleading. Impacts: go.mod module paths, publish collision detection, registry paths, `go install` paths, branch naming. Full problem description and migration strategy documented separately.
 
-**Depends on:** This plan (complete the MCP rename to `-pp-mcp` first, avoid conflicting migrations).
+**Depends on:** Both this plan and the mega MCP plan completing first (avoid conflicting migrations).
 
 ## Sources & References
 
