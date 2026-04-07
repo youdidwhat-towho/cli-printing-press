@@ -246,6 +246,14 @@ func writeCLIManifestForPublish(state *PipelineState, dir string) error {
 		if parseErr == nil {
 			populateMCPMetadata(&m, parsed)
 		}
+
+		// Generate tools-manifest.json for the mega MCP server.
+		// Non-blocking: log warning on error but don't fail the publish.
+		if parsed != nil {
+			if tmErr := WriteToolsManifest(dir, parsed); tmErr != nil {
+				fmt.Fprintf(os.Stderr, "warning: could not write tools manifest: %v\n", tmErr)
+			}
+		}
 	}
 
 	// Look up catalog entry by API name; empty string if not found.
