@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mark3labs/mcp-go/mcp"
 	"github.com/mark3labs/mcp-go/server"
@@ -61,6 +63,14 @@ func RegisterMetaTools(s *server.MCPServer, am *ActivationManager) {
 			mcp.WithDescription("Describe this mega MCP server's version, API count, and total tool count"),
 		),
 		makeAboutHandler(am),
+	)
+
+	s.AddTool(
+		mcp.NewTool("debug_api",
+			mcp.WithDescription("Health check an API: verifies base URL, auth configuration, and connectivity. Use when API calls are failing."),
+			mcp.WithString("api_slug", mcp.Required(), mcp.Description("API slug to debug (e.g., 'dub', 'espn')")),
+		),
+		makeDebugAPIHandler(am),
 	)
 }
 
@@ -347,6 +357,101 @@ func makeAboutHandler(am *ActivationManager) server.ToolHandlerFunc {
 			return mcp.NewToolResultError(fmt.Sprintf("Error serializing about info: %v", err)), nil
 		}
 
+		return mcp.NewToolResultText(string(data)), nil
+	}
+}
+
+// --- debug_api ---
+
+type debugAPIResponse struct {
+	Slug           string             `json:"slug"`
+	APIName        string             `json:"api_name"`
+	BaseURL        string             `json:"base_url"`
+	AuthType       string             `json:"auth_type"`
+	AuthConfigured bool               `json:"auth_configured"`
+	Activated      bool               `json:"activated"`
+	ToolCount      int                `json:"tool_count"`
+	HealthCheck    *healthCheckResult `json:"health_check,omitempty"`
+}
+
+type healthCheckResult struct {
+	StatusCode int               `json:"status_code"`
+	Status     string            `json:"status"`
+	Headers    map[string]string `json:"headers,omitempty"`
+	Error      string            `json:"error,omitempty"`
+}
+
+func makeDebugAPIHandler(am *ActivationManager) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		slug, err := getStringArg(req, "api_slug")
+		if err != nil {
+			return mcp.NewToolResultError(err.Error()), nil
+		}
+
+		entry := am.GetManifest(slug)
+		if entry == nil {
+			return mcp.NewToolResultError(fmt.Sprintf("API not found: %q. Call library_info to see available APIs.", slug)), nil
+		}
+
+		m := entry.Manifest
+
+		// Check auth status.
+		authConfigured := false
+		if m.Auth.Type == "" || m.Auth.Type == "none" {
+			authConfigured = true
+		} else {
+			for _, envVar := range m.Auth.EnvVars {
+				if os.Getenv(envVar) != "" {
+					authConfigured = true
+					break
+				}
+			}
+		}
+
+		resp := debugAPIResponse{
+			Slug:           slug,
+			APIName:        m.APIName,
+			BaseURL:        m.BaseURL,
+			AuthType:       m.Auth.Type,
+			AuthConfigured: authConfigured,
+			Activated:      am.IsActivated(slug),
+			ToolCount:      len(m.Tools),
+		}
+
+		// Perform a lightweight health check (GET to base URL).
+		client := SafeHTTPClient(10 * time.Second)
+		httpReq, reqErr := http.NewRequestWithContext(ctx, "GET", m.BaseURL, nil)
+		if reqErr != nil {
+			resp.HealthCheck = &healthCheckResult{
+				Error: fmt.Sprintf("Could not create request: %v", reqErr),
+			}
+		} else {
+			httpReq.Header.Set("User-Agent", "printing-press-mcp/debug")
+			httpResp, doErr := client.Do(httpReq)
+			if doErr != nil {
+				resp.HealthCheck = &healthCheckResult{
+					Error: fmt.Sprintf("Connection failed: %v", doErr),
+				}
+			} else {
+				httpResp.Body.Close()
+				headers := make(map[string]string)
+				for _, key := range []string{"Content-Type", "Server", "X-RateLimit-Limit", "X-RateLimit-Remaining"} {
+					if v := httpResp.Header.Get(key); v != "" {
+						headers[key] = v
+					}
+				}
+				resp.HealthCheck = &healthCheckResult{
+					StatusCode: httpResp.StatusCode,
+					Status:     httpResp.Status,
+					Headers:    headers,
+				}
+			}
+		}
+
+		data, jsonErr := json.MarshalIndent(resp, "", "  ")
+		if jsonErr != nil {
+			return mcp.NewToolResultError(fmt.Sprintf("Error serializing debug info: %v", jsonErr)), nil
+		}
 		return mcp.NewToolResultText(string(data)), nil
 	}
 }

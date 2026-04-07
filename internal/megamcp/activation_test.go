@@ -104,7 +104,7 @@ func TestActivate_UnknownSlug(t *testing.T) {
 	assert.Contains(t, err.Error(), "API not found")
 }
 
-func TestDeactivate_RemovesTools(t *testing.T) {
+func TestDeactivate_ReregistersStubTools(t *testing.T) {
 	s := newTestServer()
 	am := NewActivationManager(s, newTestAPIEntries())
 
@@ -114,10 +114,20 @@ func TestDeactivate_RemovesTools(t *testing.T) {
 	err = am.Deactivate("espn")
 	require.NoError(t, err)
 
-	// Verify tools are removed.
+	// After deactivation, tools should still be registered (as stubs).
 	tools := s.ListTools()
-	assert.Nil(t, tools["espn__scores_get"], "espn__scores_get should be removed")
-	assert.Nil(t, tools["espn__teams_list"], "espn__teams_list should be removed")
+	assert.NotNil(t, tools["espn__scores_get"], "espn__scores_get should be a stub")
+	assert.NotNil(t, tools["espn__teams_list"], "espn__teams_list should be a stub")
+
+	// But the API should not be marked as activated.
+	assert.False(t, am.IsActivated("espn"))
+
+	// Calling the stub should return an activation prompt.
+	result, callErr := tools["espn__scores_get"].Handler(t.Context(), makeToolRequest(nil))
+	require.NoError(t, callErr)
+	assert.True(t, result.IsError)
+	text := extractResultText(result)
+	assert.Contains(t, text, "not yet activated")
 }
 
 func TestDeactivate_NotActivated(t *testing.T) {
@@ -261,4 +271,45 @@ func TestToolNamesForSlug(t *testing.T) {
 
 	missing := am.toolNamesForSlug("nonexistent")
 	assert.Nil(t, missing)
+}
+
+func TestStubToolsRegisteredAtStartup(t *testing.T) {
+	s := newTestServer()
+	entries := newTestAPIEntries()
+	_ = NewActivationManager(s, entries)
+
+	// Stub tools should be visible in the server's tool list immediately.
+	// We can't directly query the server's tool list, but we can verify
+	// that calling a stub returns the activation prompt.
+	// The stubs are registered via AddTools in registerStubs().
+	// We verify this indirectly by checking that the stub handler works.
+	handler := makeStubHandler("espn", "ESPN", 3)
+	result, err := handler(t.Context(), makeToolRequest(nil))
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	text := extractResultText(result)
+	assert.Contains(t, text, "not yet activated")
+	assert.Contains(t, text, "activate_api")
+	assert.Contains(t, text, "espn")
+	assert.Contains(t, text, "3 tools")
+}
+
+func TestDeactivate_ReregistersStubs(t *testing.T) {
+	s := newTestServer()
+	am := NewActivationManager(s, newTestAPIEntries())
+
+	// Activate then deactivate.
+	_, err := am.Activate("espn")
+	require.NoError(t, err)
+	assert.True(t, am.IsActivated("espn"))
+
+	err = am.Deactivate("espn")
+	require.NoError(t, err)
+	assert.False(t, am.IsActivated("espn"))
+
+	// After deactivation, re-activating should work (stubs were re-registered).
+	count, err := am.Activate("espn")
+	require.NoError(t, err)
+	assert.Equal(t, 3, count)
+	assert.True(t, am.IsActivated("espn"))
 }

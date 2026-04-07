@@ -1,6 +1,7 @@
 package megamcp
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -22,22 +23,76 @@ type ActivationManager struct {
 }
 
 // NewActivationManager creates a new ActivationManager with all loaded API entries.
+// Registers stub tools for ALL APIs immediately so agents can discover tool names
+// via tools/list. Stubs prompt the agent to call activate_api before execution.
 func NewActivationManager(s *server.MCPServer, entries []*APIEntry) *ActivationManager {
 	manifests := make(map[string]*APIEntry, len(entries))
 	for _, entry := range entries {
 		manifests[entry.Slug] = entry
 	}
-	return &ActivationManager{
+	am := &ActivationManager{
 		server:    s,
 		manifests: manifests,
 		activated: make(map[string]bool),
 		clients:   make(map[string]*http.Client),
 	}
+
+	// Register stub tools for all APIs so agents can see tool names in tools/list.
+	am.registerStubs()
+
+	return am
 }
 
-// Activate registers tools for the given API slug. Returns the number of tools
-// registered. Idempotent: calling twice for the same slug returns the same count
-// without duplicating tools.
+// registerStubs registers lightweight stub handlers for all tools across all APIs.
+// When called, stubs return an activation prompt instead of making HTTP requests.
+func (am *ActivationManager) registerStubs() {
+	var stubs []server.ServerTool
+	for _, entry := range am.manifests {
+		prefix := entry.NormalizedPrefix
+		slug := entry.Slug
+		apiName := entry.Manifest.APIName
+		toolCount := len(entry.Manifest.Tools)
+
+		for _, tool := range entry.Manifest.Tools {
+			toolName := prefix + "__" + tool.Name
+
+			toolOpts := []mcp.ToolOption{
+				mcp.WithDescription(SanitizeText(tool.Description, 500)),
+			}
+			for _, param := range tool.Params {
+				paramOpts := []mcp.PropertyOption{
+					mcp.Description(SanitizeText(param.Description, 200)),
+				}
+				if param.Required {
+					paramOpts = append(paramOpts, mcp.Required())
+				}
+				toolOpts = append(toolOpts, mcp.WithString(param.Name, paramOpts...))
+			}
+
+			mcpTool := mcp.NewTool(toolName, toolOpts...)
+			handler := makeStubHandler(slug, apiName, toolCount)
+			stubs = append(stubs, server.ServerTool{Tool: mcpTool, Handler: handler})
+		}
+	}
+
+	if len(stubs) > 0 {
+		am.server.AddTools(stubs...)
+	}
+}
+
+// makeStubHandler returns a handler that prompts the agent to activate the API first.
+func makeStubHandler(slug, apiName string, toolCount int) server.ToolHandlerFunc {
+	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+		return mcp.NewToolResultError(
+			fmt.Sprintf("This API is not yet activated. Call activate_api(%q) first to enable %d tools for %s.",
+				slug, toolCount, apiName),
+		), nil
+	}
+}
+
+// Activate registers real HTTP handlers for the given API slug, replacing
+// the stub handlers. Returns the number of tools registered. Idempotent:
+// calling twice for the same slug returns the same count without duplicating tools.
 func (am *ActivationManager) Activate(slug string) (int, error) {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -56,11 +111,13 @@ func (am *ActivationManager) Activate(slug string) (int, error) {
 	client := SafeHTTPClient(30 * time.Second)
 	am.clients[slug] = client
 
-	// Register each tool with the normalized prefix.
+	// Delete stubs first, then register real handlers.
 	prefix := entry.NormalizedPrefix
+	var stubNames []string
 	var tools []server.ServerTool
 	for _, tool := range entry.Manifest.Tools {
 		toolName := prefix + "__" + tool.Name
+		stubNames = append(stubNames, toolName)
 
 		// Build MCP tool definition with parameter schema.
 		toolOpts := []mcp.ToolOption{
@@ -81,7 +138,10 @@ func (am *ActivationManager) Activate(slug string) (int, error) {
 		tools = append(tools, server.ServerTool{Tool: mcpTool, Handler: handler})
 	}
 
-	// AddTools sends tools/list_changed notification automatically.
+	// Remove stubs, then add real handlers.
+	if len(stubNames) > 0 {
+		am.server.DeleteTools(stubNames...)
+	}
 	if len(tools) > 0 {
 		am.server.AddTools(tools...)
 	}
@@ -90,7 +150,7 @@ func (am *ActivationManager) Activate(slug string) (int, error) {
 	return len(entry.Manifest.Tools), nil
 }
 
-// Deactivate removes all tools for the given API slug.
+// Deactivate removes real handlers for the given API slug and re-registers stubs.
 func (am *ActivationManager) Deactivate(slug string) error {
 	am.mu.Lock()
 	defer am.mu.Unlock()
@@ -107,13 +167,39 @@ func (am *ActivationManager) Deactivate(slug string) error {
 	// Collect tool names to delete.
 	prefix := entry.NormalizedPrefix
 	var names []string
+	var stubs []server.ServerTool
+	apiName := entry.Manifest.APIName
+	toolCount := len(entry.Manifest.Tools)
+
 	for _, tool := range entry.Manifest.Tools {
-		names = append(names, prefix+"__"+tool.Name)
+		toolName := prefix + "__" + tool.Name
+		names = append(names, toolName)
+
+		// Re-register as stub.
+		toolOpts := []mcp.ToolOption{
+			mcp.WithDescription(SanitizeText(tool.Description, 500)),
+		}
+		for _, param := range tool.Params {
+			paramOpts := []mcp.PropertyOption{
+				mcp.Description(SanitizeText(param.Description, 200)),
+			}
+			if param.Required {
+				paramOpts = append(paramOpts, mcp.Required())
+			}
+			toolOpts = append(toolOpts, mcp.WithString(param.Name, paramOpts...))
+		}
+
+		mcpTool := mcp.NewTool(toolName, toolOpts...)
+		handler := makeStubHandler(slug, apiName, toolCount)
+		stubs = append(stubs, server.ServerTool{Tool: mcpTool, Handler: handler})
 	}
 
-	// DeleteTools sends tools/list_changed notification automatically.
+	// Delete real handlers, add back stubs.
 	if len(names) > 0 {
 		am.server.DeleteTools(names...)
+	}
+	if len(stubs) > 0 {
+		am.server.AddTools(stubs...)
 	}
 
 	delete(am.activated, slug)

@@ -14,8 +14,12 @@ import (
 	"github.com/mark3labs/mcp-go/server"
 )
 
-// maxResponseBody is the maximum response body size the handler will read (10MB).
+// maxResponseBody is the maximum response body size the handler will read from the network (10MB).
 const maxResponseBody = 10 * 1024 * 1024
+
+// maxAgentResponse is the maximum response text returned to the agent (32KB).
+// Larger responses are truncated with a size note to prevent context window flooding.
+const maxAgentResponse = 32 * 1024
 
 // MakeToolHandler returns an MCP tool handler function that makes HTTP requests
 // to APIs using the tools manifest data. It handles auth, parameter routing
@@ -197,6 +201,11 @@ func MakeToolHandler(manifest *ToolsManifest, tool ManifestTool, httpClient *htt
 
 		// Success (2xx).
 		if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+			if len(respText) > maxAgentResponse {
+				truncated := respText[:maxAgentResponse]
+				totalKB := len(respText) / 1024
+				return mcp.NewToolResultText(fmt.Sprintf("%s\n\n[Response truncated — showing first 32KB of %dKB. Use more specific query parameters to narrow results, or install the per-API MCP for full responses.]", truncated, totalKB)), nil
+			}
 			return mcp.NewToolResultText(respText), nil
 		}
 

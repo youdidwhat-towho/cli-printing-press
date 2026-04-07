@@ -828,6 +828,82 @@ func TestMcpDescriptionForManifest(t *testing.T) {
 	}
 }
 
+func TestNormalizeAuthFormat(t *testing.T) {
+	tests := []struct {
+		name    string
+		format  string
+		envVars []string
+		want    string
+	}{
+		{
+			name:    "already uses env var name",
+			format:  "Bearer {DUB_TOKEN}",
+			envVars: []string{"DUB_TOKEN"},
+			want:    "Bearer {DUB_TOKEN}",
+		},
+		{
+			name:    "derived placeholder replaced with env var",
+			format:  "Bearer {token}",
+			envVars: []string{"DUB_TOKEN"},
+			want:    "Bearer {DUB_TOKEN}",
+		},
+		{
+			name:    "semantic access_token replaced",
+			format:  "Bearer {access_token}",
+			envVars: []string{"GITHUB_TOKEN"},
+			want:    "Bearer {GITHUB_TOKEN}",
+		},
+		{
+			name:    "multi-part derived placeholder",
+			format:  "Basic {project_id}:{secret}",
+			envVars: []string{"STYTCH_PROJECT_ID", "STYTCH_SECRET"},
+			want:    "Basic {STYTCH_PROJECT_ID}:{STYTCH_SECRET}",
+		},
+		{
+			name:    "empty format stays empty",
+			format:  "",
+			envVars: []string{"TOKEN"},
+			want:    "",
+		},
+		{
+			name:    "no env vars stays unchanged",
+			format:  "Bearer {token}",
+			envVars: nil,
+			want:    "Bearer {token}",
+		},
+		{
+			name:    "api_key semantic alias replaced",
+			format:  "ApiKey {api_key}",
+			envVars: []string{"STEAM_WEB_API_KEY"},
+			want:    "ApiKey {STEAM_WEB_API_KEY}",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := normalizeAuthFormat(tt.format, tt.envVars)
+			assert.Equal(t, tt.want, got)
+		})
+	}
+}
+
+func TestEnvVarPlaceholder(t *testing.T) {
+	tests := []struct {
+		input string
+		want  string
+	}{
+		{"DUB_TOKEN", "token"},
+		{"STYTCH_PROJECT_ID", "project_id"},
+		{"STEAM_WEB_API_KEY", "web_api_key"},
+		{"TOKEN", "token"},
+		{"GITHUB_TOKEN", "token"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.input, func(t *testing.T) {
+			assert.Equal(t, tt.want, envVarPlaceholder(tt.input))
+		})
+	}
+}
+
 func TestOnelineForManifest(t *testing.T) {
 	tests := []struct {
 		name  string

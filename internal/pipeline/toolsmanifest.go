@@ -91,7 +91,7 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 		Auth: ManifestAuth{
 			Type:    parsed.Auth.Type,
 			Header:  parsed.Auth.Header,
-			Format:  parsed.Auth.Format,
+			Format:  normalizeAuthFormat(parsed.Auth.Format, parsed.Auth.EnvVars),
 			In:      parsed.Auth.In,
 			EnvVars: parsed.Auth.EnvVars,
 			KeyURL:  parsed.Auth.KeyURL,
@@ -205,6 +205,49 @@ func buildManifestTool(name, description string, ep spec.Endpoint) ManifestTool 
 	}
 
 	return tool
+}
+
+// normalizeAuthFormat rewrites the auth format string so that derived
+// placeholders (like {token} from DUB_TOKEN) become the actual env var
+// name ({DUB_TOKEN}). This way the mega MCP's runtime expansion only needs
+// to handle env var names, not the derived semantic aliases that the
+// generated config template uses.
+func normalizeAuthFormat(format string, envVars []string) string {
+	if format == "" || len(envVars) == 0 {
+		return format
+	}
+	result := format
+	for _, envVar := range envVars {
+		derived := envVarPlaceholder(envVar)
+		if derived != strings.ToLower(envVar) {
+			// Replace the derived placeholder with the env var name.
+			result = strings.ReplaceAll(result, "{"+derived+"}", "{"+envVar+"}")
+		}
+	}
+	// Also replace common semantic aliases with the first env var.
+	first := envVars[0]
+	for _, alias := range []string{"token", "access_token", "api_key"} {
+		// Only replace if it's not already the env var name.
+		if alias != strings.ToLower(first) {
+			result = strings.ReplaceAll(result, "{"+alias+"}", "{"+first+"}")
+		}
+	}
+	return result
+}
+
+// envVarPlaceholder derives the placeholder name from an env var.
+// DUB_TOKEN -> token, STYTCH_PROJECT_ID -> project_id.
+// Mirrors the logic in internal/generator/generator.go:1331.
+func envVarPlaceholder(envVar string) string {
+	parts := strings.Split(envVar, "_")
+	if len(parts) <= 1 {
+		return strings.ToLower(envVar)
+	}
+	lower := make([]string, 0, len(parts)-1)
+	for _, p := range parts[1:] {
+		lower = append(lower, strings.ToLower(p))
+	}
+	return strings.Join(lower, "_")
 }
 
 // normalizeParamType ensures a consistent type string. Empty types default

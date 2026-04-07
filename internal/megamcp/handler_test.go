@@ -482,6 +482,59 @@ func TestMakeToolHandler_LargeResponseTruncated(t *testing.T) {
 	assert.LessOrEqual(t, len(text), maxResponseBody)
 }
 
+func TestMakeToolHandler_AgentResponseTruncation(t *testing.T) {
+	// Returns a 50KB response — should be truncated to 32KB for the agent.
+	bigBody := strings.Repeat("x", 50*1024)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(bigBody))
+	}))
+	defer srv.Close()
+
+	manifest := &ToolsManifest{
+		APIName: "bigapi",
+		BaseURL: srv.URL,
+		Auth:    ManifestAuth{Type: "none"},
+	}
+	tool := ManifestTool{Name: "big_get", Method: "GET", Path: "/big"}
+
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
+	result, err := handler(t.Context(), makeToolRequest(nil))
+
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	text := extractResultText(result)
+	assert.Contains(t, text, "[Response truncated")
+	assert.Contains(t, text, "32KB of 50KB")
+	// The truncated output should be around 32KB + the truncation message.
+	assert.Less(t, len(text), 34*1024)
+}
+
+func TestMakeToolHandler_SmallResponseNotTruncated(t *testing.T) {
+	body := `{"status": "ok"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(200)
+		w.Write([]byte(body))
+	}))
+	defer srv.Close()
+
+	manifest := &ToolsManifest{
+		APIName: "smallapi",
+		BaseURL: srv.URL,
+		Auth:    ManifestAuth{Type: "none"},
+	}
+	tool := ManifestTool{Name: "small_get", Method: "GET", Path: "/small"}
+
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
+	result, err := handler(t.Context(), makeToolRequest(nil))
+
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+	text := extractResultText(result)
+	assert.Equal(t, body, text)
+	assert.NotContains(t, text, "[Response truncated")
+}
+
 func TestMakeToolHandler_MissingRequiredPathParam(t *testing.T) {
 	manifest := &ToolsManifest{
 		APIName: "myapi",

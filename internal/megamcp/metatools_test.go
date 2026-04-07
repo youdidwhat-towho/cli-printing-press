@@ -33,7 +33,7 @@ func TestRegisterMetaTools_AllRegistered(t *testing.T) {
 	s, _ := newMetaToolsServer()
 
 	tools := s.ListTools()
-	expected := []string{"library_info", "setup_guide", "activate_api", "deactivate_api", "search_tools", "about"}
+	expected := []string{"library_info", "setup_guide", "activate_api", "deactivate_api", "search_tools", "about", "debug_api"}
 	for _, name := range expected {
 		assert.NotNil(t, tools[name], "meta-tool %q should be registered", name)
 	}
@@ -302,7 +302,7 @@ func TestActivateAPI_ShowsExampleTools(t *testing.T) {
 
 // --- deactivate_api ---
 
-func TestDeactivateAPI_RemovesTools(t *testing.T) {
+func TestDeactivateAPI_ReplacesWithStubs(t *testing.T) {
 	s, am := newMetaToolsServer()
 
 	_, err := am.Activate("espn")
@@ -312,9 +312,10 @@ func TestDeactivateAPI_RemovesTools(t *testing.T) {
 	assert.False(t, result.IsError)
 	assertResultContains(t, result, "Deactivated")
 
-	// Verify tools removed from server.
+	// After deactivation, tools should still be registered (as stubs).
 	tools := s.ListTools()
-	assert.Nil(t, tools["espn__scores_get"])
+	assert.NotNil(t, tools["espn__scores_get"], "tool should exist as a stub after deactivation")
+	assert.False(t, am.IsActivated("espn"))
 }
 
 func TestDeactivateAPI_NotActivated(t *testing.T) {
@@ -480,4 +481,44 @@ func TestCountPublicTools_EmptyAuthType(t *testing.T) {
 		},
 	}
 	assert.Equal(t, 1, countPublicTools(m))
+}
+
+func TestDebugAPI_ValidAPI(t *testing.T) {
+	s := newTestServer()
+	am := NewActivationManager(s, newTestAPIEntries())
+
+	handler := makeDebugAPIHandler(am)
+	result, err := handler(t.Context(), makeToolRequest(map[string]any{"api_slug": "espn"}))
+	require.NoError(t, err)
+	assert.False(t, result.IsError)
+
+	text := extractResultText(result)
+	assert.Contains(t, text, "espn")
+	assert.Contains(t, text, "base_url")
+	assert.Contains(t, text, "auth_configured")
+	assert.Contains(t, text, "health_check")
+}
+
+func TestDebugAPI_UnknownSlug(t *testing.T) {
+	s := newTestServer()
+	am := NewActivationManager(s, newTestAPIEntries())
+
+	handler := makeDebugAPIHandler(am)
+	result, err := handler(t.Context(), makeToolRequest(map[string]any{"api_slug": "nonexistent"}))
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	text := extractResultText(result)
+	assert.Contains(t, text, "API not found")
+}
+
+func TestDebugAPI_MissingArg(t *testing.T) {
+	s := newTestServer()
+	am := NewActivationManager(s, newTestAPIEntries())
+
+	handler := makeDebugAPIHandler(am)
+	result, err := handler(t.Context(), makeToolRequest(nil))
+	require.NoError(t, err)
+	assert.True(t, result.IsError)
+	text := extractResultText(result)
+	assert.Contains(t, text, "missing required")
 }
