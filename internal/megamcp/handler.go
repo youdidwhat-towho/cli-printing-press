@@ -20,9 +20,10 @@ const maxResponseBody = 10 * 1024 * 1024
 // MakeToolHandler returns an MCP tool handler function that makes HTTP requests
 // to APIs using the tools manifest data. It handles auth, parameter routing
 // (path/query/body), required headers, and response classification.
-func MakeToolHandler(manifest *ToolsManifest, tool ManifestTool, httpClient *http.Client) server.ToolHandlerFunc {
+// The apiSlug is the canonical slug used in setup_guide references (e.g., "dub", not "Dub").
+func MakeToolHandler(manifest *ToolsManifest, tool ManifestTool, httpClient *http.Client, apiSlug string) server.ToolHandlerFunc {
 	return func(ctx context.Context, req mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-		slug := manifest.APIName
+		slug := apiSlug
 
 		// 1. Fail-closed auth check.
 		if !tool.NoAuth && manifest.Auth.Type != "" && manifest.Auth.Type != "none" {

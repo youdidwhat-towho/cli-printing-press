@@ -11,8 +11,10 @@ import (
 	"unicode"
 )
 
-// ValidateBaseURL rejects non-HTTPS URLs, private IPs, loopback,
-// link-local, and cloud metadata addresses.
+// ValidateBaseURL rejects non-HTTPS URLs and literal private/loopback IPs.
+// Does NOT perform DNS resolution — that check happens at request time via
+// SafeDialer to prevent DNS rebinding attacks. This function validates the
+// URL format and catches obviously unsafe literal IP addresses.
 func ValidateBaseURL(rawURL string) error {
 	parsed, err := url.Parse(rawURL)
 	if err != nil {
@@ -28,19 +30,11 @@ func ValidateBaseURL(rawURL string) error {
 		return fmt.Errorf("URL has no hostname")
 	}
 
-	// Resolve the hostname to check the actual IP addresses.
-	ips, err := net.LookupHost(host)
-	if err != nil {
-		return fmt.Errorf("cannot resolve hostname %q: %w", host, err)
-	}
-
-	for _, ipStr := range ips {
-		ip := net.ParseIP(ipStr)
-		if ip == nil {
-			continue
-		}
+	// If the host is a literal IP address, check it directly.
+	// Hostname-based URLs are checked at request time via SafeDialer.
+	if ip := net.ParseIP(host); ip != nil {
 		if err := checkIP(ip); err != nil {
-			return fmt.Errorf("hostname %q resolves to %s: %w", host, ipStr, err)
+			return fmt.Errorf("IP address %s: %w", host, err)
 		}
 	}
 

@@ -17,7 +17,13 @@ import (
 // It applies the PRINTING_PRESS_APIS env var filter, loads manifests in parallel,
 // and returns successfully loaded API entries plus any warnings.
 // Failed fetches produce warnings but do not block other APIs.
+// If entries is nil (registry fetch failed), falls back to cached manifests.
 func LoadManifests(entries []RegistryEntry, cacheDir, baseURL string) ([]*APIEntry, []string) {
+	// If no registry was provided (fetch failed), try loading from cache.
+	if entries == nil {
+		return loadFromCacheOnly(cacheDir)
+	}
+
 	// Apply PRINTING_PRESS_APIS filter if set.
 	filtered := filterEntries(entries)
 
@@ -46,6 +52,63 @@ func LoadManifests(entries []RegistryEntry, cacheDir, baseURL string) ([]*APIEnt
 
 	// errgroup.Group (not WithContext) — errors don't cancel siblings.
 	_ = g.Wait()
+
+	return results, warnings
+}
+
+// loadFromCacheOnly scans the cache directory for previously cached manifests.
+// Used as a fallback when the registry fetch fails.
+func loadFromCacheOnly(cacheDir string) ([]*APIEntry, []string) {
+	manifestsDir := filepath.Join(cacheDir, "manifests")
+	dirEntries, err := os.ReadDir(manifestsDir)
+	if err != nil {
+		return nil, []string{"no cached manifests available (registry fetch failed)"}
+	}
+
+	apiFilter := parseAPIFilter()
+	var results []*APIEntry
+	var warnings []string
+
+	for _, de := range dirEntries {
+		if !de.IsDir() {
+			continue
+		}
+		slug := de.Name()
+		if err := ValidateSlug(slug); err != nil {
+			continue
+		}
+		if apiFilter != nil && !apiFilter[slug] {
+			continue
+		}
+
+		cachePath := filepath.Join(manifestsDir, slug, "tools-manifest.json")
+		data, err := os.ReadFile(cachePath)
+		if err != nil {
+			continue
+		}
+
+		manifest, err := parseManifest(data)
+		if err != nil {
+			warnings = append(warnings, fmt.Sprintf("cached manifest for %q is corrupt: %v", slug, err))
+			continue
+		}
+
+		prefix, err := slugToToolPrefix(slug)
+		if err != nil {
+			continue
+		}
+
+		results = append(results, &APIEntry{
+			Slug:             slug,
+			Dir:              filepath.Join(manifestsDir, slug),
+			Manifest:         manifest,
+			NormalizedPrefix: prefix,
+		})
+	}
+
+	if len(results) > 0 {
+		warnings = append(warnings, fmt.Sprintf("registry fetch failed; loaded %d APIs from cache", len(results)))
+	}
 
 	return results, warnings
 }
@@ -126,6 +189,10 @@ func loadSingleManifest(entry RegistryEntry, cacheDir, baseURL string) (*APIEntr
 	// Try cached manifest first.
 	manifest, err := tryCache(cachePath, entry.MCP.ManifestChecksum)
 	if err == nil && manifest != nil {
+		// Validate base URL even for cached manifests.
+		if urlErr := ValidateBaseURL(manifest.BaseURL); urlErr != nil {
+			return nil, fmt.Sprintf("skipping %q: unsafe base URL %q: %v", slug, manifest.BaseURL, urlErr)
+		}
 		return &APIEntry{
 			Slug:             slug,
 			Dir:              cacheSubDir,
@@ -152,6 +219,11 @@ func loadSingleManifest(entry RegistryEntry, cacheDir, baseURL string) (*APIEntr
 	manifest, err = parseManifest(data)
 	if err != nil {
 		return nil, fmt.Sprintf("skipping %q: %v", slug, err)
+	}
+
+	// Validate the manifest's base URL against SSRF protections.
+	if err := ValidateBaseURL(manifest.BaseURL); err != nil {
+		return nil, fmt.Sprintf("skipping %q: unsafe base URL %q: %v", slug, manifest.BaseURL, err)
 	}
 
 	// Write to cache via temp-then-rename.

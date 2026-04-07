@@ -70,7 +70,7 @@ func TestMakeToolHandler_GetWithPathParam(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(map[string]any{
 		"user_id": "123",
 	}))
@@ -100,7 +100,7 @@ func TestMakeToolHandler_GetWithQueryParams(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(map[string]any{
 		"page":  float64(2),
 		"limit": float64(10),
@@ -136,7 +136,7 @@ func TestMakeToolHandler_PostWithBodyParams(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(map[string]any{
 		"org_id": "acme",
 		"name":   "Alice",
@@ -174,7 +174,7 @@ func TestMakeToolHandler_ApiKeyAuthInHeader(t *testing.T) {
 		Path:   "/status",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -209,7 +209,7 @@ func TestMakeToolHandler_ApiKeyAuthInQuery(t *testing.T) {
 		Path:   "/scores",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -244,7 +244,7 @@ func TestMakeToolHandler_BearerTokenAuth(t *testing.T) {
 		Path:   "/links",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -273,7 +273,7 @@ func TestMakeToolHandler_RequiredHeaders(t *testing.T) {
 		Path:   "/data",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -305,7 +305,7 @@ func TestMakeToolHandler_PerToolHeaderOverrides(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -331,7 +331,7 @@ func TestMakeToolHandler_NoAuth(t *testing.T) {
 		Path:   "/public",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -357,7 +357,7 @@ func TestMakeToolHandler_MissingEnvVarNonNoAuth(t *testing.T) {
 		Path:   "/data",
 	}
 
-	handler := MakeToolHandler(manifest, tool, &http.Client{Timeout: time.Second})
+	handler := MakeToolHandler(manifest, tool, &http.Client{Timeout: time.Second}, "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -390,7 +390,7 @@ func TestMakeToolHandler_MissingEnvVarNoAuthEndpoint(t *testing.T) {
 		NoAuth: true, // This endpoint doesn't need auth.
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -421,7 +421,7 @@ func TestMakeToolHandler_401Response(t *testing.T) {
 		Path:   "/data",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -447,7 +447,7 @@ func TestMakeToolHandler_429Response(t *testing.T) {
 		Path:   "/data",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -472,7 +472,7 @@ func TestMakeToolHandler_LargeResponseTruncated(t *testing.T) {
 		Path:   "/data",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -499,7 +499,7 @@ func TestMakeToolHandler_MissingRequiredPathParam(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, &http.Client{Timeout: time.Second})
+	handler := MakeToolHandler(manifest, tool, &http.Client{Timeout: time.Second}, "test-api")
 	// Only provide user_id, not post_id.
 	result, err := handler(t.Context(), makeToolRequest(map[string]any{
 		"user_id": "123",
@@ -530,7 +530,7 @@ func TestMakeToolHandler_PathParamWithTraversal(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(map[string]any{
 		"file_id": "../../../etc/passwd",
 	}))
@@ -556,7 +556,7 @@ func TestMakeToolHandler_500Response(t *testing.T) {
 		Path:   "/data",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -612,7 +612,7 @@ func TestMakeToolHandler_IntegrationRoundTrip(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(map[string]any{
 		"link_id": "lnk_42",
 		"url":     "https://example.com",
@@ -662,7 +662,7 @@ func TestMakeToolHandler_403Response(t *testing.T) {
 		Path:   "/admin",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -687,7 +687,7 @@ func TestMakeToolHandler_4xxResponse(t *testing.T) {
 		Path:   "/data",
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(nil))
 
 	require.NoError(t, err)
@@ -715,7 +715,7 @@ func TestMakeToolHandler_ContentTypeForPOST(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	_, err := handler(t.Context(), makeToolRequest(map[string]any{
 		"name": "test",
 	}))
@@ -742,7 +742,7 @@ func TestMakeToolHandler_DeleteMethod(t *testing.T) {
 		},
 	}
 
-	handler := MakeToolHandler(manifest, tool, srv.Client())
+	handler := MakeToolHandler(manifest, tool, srv.Client(), "test-api")
 	result, err := handler(t.Context(), makeToolRequest(map[string]any{
 		"id": "42",
 	}))

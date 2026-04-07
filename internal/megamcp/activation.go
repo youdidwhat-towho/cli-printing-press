@@ -77,7 +77,7 @@ func (am *ActivationManager) Activate(slug string) (int, error) {
 		}
 
 		mcpTool := mcp.NewTool(toolName, toolOpts...)
-		handler := MakeToolHandler(entry.Manifest, tool, client)
+		handler := MakeToolHandler(entry.Manifest, tool, client, slug)
 		tools = append(tools, server.ServerTool{Tool: mcpTool, Handler: handler})
 	}
 

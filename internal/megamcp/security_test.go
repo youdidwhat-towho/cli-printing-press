@@ -41,10 +41,21 @@ func TestValidateBaseURL(t *testing.T) {
 			errMsg:  "loopback",
 		},
 		{
-			name:    "localhost rejected",
+			name:    "localhost hostname passes format check (DNS check at request time)",
 			url:     "https://localhost/test",
+			wantErr: false,
+		},
+		{
+			name:    "private IP 10.x rejected",
+			url:     "https://10.0.0.1/test",
 			wantErr: true,
-			errMsg:  "loopback",
+			errMsg:  "private",
+		},
+		{
+			name:    "private IP 192.168.x rejected",
+			url:     "https://192.168.1.1/test",
+			wantErr: true,
+			errMsg:  "private",
 		},
 		{
 			name:    "no hostname rejected",

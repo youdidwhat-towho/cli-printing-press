@@ -36,15 +36,16 @@ func main() {
 	registry, err := megamcp.FetchRegistry(baseURL)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "warning: could not fetch registry: %v\n", err)
-		// Continue with empty registry — library_info will show the error.
+		// Continue with empty entries — LoadManifests handles nil gracefully,
+		// and cached manifests from a previous successful run will still be used.
 	}
 
 	// Load and cache tools manifests.
-	var entries []*megamcp.APIEntry
-	var warnings []string
+	var registryEntries []megamcp.RegistryEntry
 	if registry != nil {
-		entries, warnings = megamcp.LoadManifests(registry.Entries, cacheDir, baseURL)
+		registryEntries = registry.Entries
 	}
+	entries, warnings := megamcp.LoadManifests(registryEntries, cacheDir, baseURL)
 	for _, w := range warnings {
 		fmt.Fprintf(os.Stderr, "warning: %s\n", w)
 	}
