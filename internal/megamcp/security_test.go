@@ -1,10 +1,13 @@
 package megamcp
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"net"
 	"path/filepath"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,6 +81,24 @@ func TestValidateBaseURL(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSafeHTTPClient(t *testing.T) {
+	// SafeHTTPClient should return a non-nil client with a custom transport.
+	client := SafeHTTPClient(30 * time.Second)
+	require.NotNil(t, client)
+	assert.Equal(t, 30*time.Second, client.Timeout)
+	assert.NotNil(t, client.Transport, "should have custom transport with safe dialer")
+}
+
+func TestSafeDialer_RejectsLoopback(t *testing.T) {
+	d := &safeDialer{inner: &net.Dialer{Timeout: 5 * time.Second}}
+	ctx := context.Background()
+
+	// Connecting to 127.0.0.1 should be rejected.
+	_, err := d.DialContext(ctx, "tcp", "127.0.0.1:443")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "loopback")
 }
 
 func TestSanitizeText(t *testing.T) {

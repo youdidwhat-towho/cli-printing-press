@@ -1,13 +1,16 @@
 package megamcp
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"net/http"
 	"net/url"
 	"path/filepath"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -57,6 +60,57 @@ func checkIP(ip net.IP) error {
 		return fmt.Errorf("cloud metadata address rejected")
 	}
 	return nil
+}
+
+// SafeHTTPClient returns an http.Client with a custom dialer that rejects
+// connections to private, loopback, link-local, and cloud metadata IPs.
+// This is the runtime SSRF guard that ValidateBaseURL defers DNS checks to.
+func SafeHTTPClient(timeout time.Duration) *http.Client {
+	dialer := &safeDialer{
+		inner: &net.Dialer{Timeout: 10 * time.Second},
+	}
+	transport := &http.Transport{
+		Proxy:       http.ProxyFromEnvironment,
+		DialContext: dialer.DialContext,
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
+}
+
+// safeDialer wraps a net.Dialer and checks resolved IPs before connecting.
+type safeDialer struct {
+	inner *net.Dialer
+}
+
+// DialContext resolves the hostname, validates all IPs, then connects.
+func (d *safeDialer) DialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return nil, fmt.Errorf("invalid address %q: %w", addr, err)
+	}
+
+	// Resolve hostname to IPs.
+	ips, err := net.DefaultResolver.LookupHost(ctx, host)
+	if err != nil {
+		return nil, fmt.Errorf("cannot resolve %q: %w", host, err)
+	}
+
+	// Check every resolved IP.
+	for _, ipStr := range ips {
+		ip := net.ParseIP(ipStr)
+		if ip == nil {
+			continue
+		}
+		if err := checkIP(ip); err != nil {
+			return nil, fmt.Errorf("hostname %q resolves to %s: %w", host, ipStr, err)
+		}
+	}
+
+	// All IPs are safe — connect to the first one.
+	safeAddr := net.JoinHostPort(ips[0], port)
+	return d.inner.DialContext(ctx, network, safeAddr)
 }
 
 // SanitizeText strips control characters (except newline and tab),

@@ -93,6 +93,12 @@ func loadFromCacheOnly(cacheDir string) ([]*APIEntry, []string) {
 			continue
 		}
 
+		// Validate base URL even for cached manifests.
+		if err := ValidateBaseURL(manifest.BaseURL); err != nil {
+			warnings = append(warnings, fmt.Sprintf("skipping cached %q: unsafe base URL: %v", slug, err))
+			continue
+		}
+
 		prefix, err := slugToToolPrefix(slug)
 		if err != nil {
 			continue

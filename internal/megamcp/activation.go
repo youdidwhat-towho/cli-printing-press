@@ -52,8 +52,8 @@ func (am *ActivationManager) Activate(slug string) (int, error) {
 		return len(entry.Manifest.Tools), nil
 	}
 
-	// Create a per-API HTTP client.
-	client := &http.Client{Timeout: 30 * time.Second}
+	// Create a per-API HTTP client with SSRF-safe dialer.
+	client := SafeHTTPClient(30 * time.Second)
 	am.clients[slug] = client
 
 	// Register each tool with the normalized prefix.
