@@ -619,7 +619,7 @@ The registry file has this structure:
 }
 ```
 
-Read `$PUBLISH_REPO_DIR/registry.json`, parse the `entries` array (not the top-level object), add or update the entry for this CLI. Match on `name` field. Preserve `schema_version` and any other top-level fields.
+Read `$PUBLISH_REPO_DIR/registry.json`, parse the `entries` array (not the top-level object), add or update the entry for this CLI. Match on `name` field. Preserve `schema_version` and any other top-level fields. After adding or updating the entry, sort the `entries` array alphabetically by `name` field to prevent merge conflicts and keep the file reviewable.
 
 **MCP metadata:** If the CLI's `.printing-press.json` manifest has MCP fields (`mcp_binary` is non-empty), populate the `mcp` block in the registry entry:
 - `binary`: from manifest `mcp_binary`

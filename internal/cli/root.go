@@ -20,6 +20,7 @@ import (
 	"github.com/mvanhorn/cli-printing-press/internal/graphql"
 	"github.com/mvanhorn/cli-printing-press/internal/llm"
 	"github.com/mvanhorn/cli-printing-press/internal/llmpolish"
+	"github.com/mvanhorn/cli-printing-press/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/internal/openapi"
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/mvanhorn/cli-printing-press/internal/spec"
@@ -305,6 +306,10 @@ func newGenerateCmd() *cobra.Command {
 			var apiSpec *spec.APISpec
 			if len(specs) == 1 {
 				apiSpec = specs[0]
+				// Override spec-derived name when --name is explicitly provided
+				if cliName != "" {
+					apiSpec.Name = cliName
+				}
 			} else {
 				if cliName == "" {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--name is required when using multiple specs")}
@@ -405,9 +410,9 @@ func newGenerateCmd() *cobra.Command {
 			// The spec_url may change or disappear; this local copy is the
 			// only guaranteed way to regenerate from the exact same input.
 			if len(specRawBytes) > 0 {
-				archiveName := "spec.json"
-				if len(specFiles) > 0 && !openapi.IsOpenAPI(specRawBytes[0]) {
-					archiveName = "spec.yaml"
+				archiveName := "spec.yaml"
+				if json.Valid(specRawBytes[0]) {
+					archiveName = "spec.json"
 				}
 				if err := os.WriteFile(filepath.Join(absOut, archiveName), specRawBytes[0], 0o644); err != nil {
 					fmt.Fprintf(os.Stderr, "warning: could not archive spec: %v\n", err)

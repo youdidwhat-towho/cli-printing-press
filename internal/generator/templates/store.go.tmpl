@@ -352,13 +352,25 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) error 
 	}
 	defer tx.Rollback()
 
+	var skippedCount int
 	for _, item := range items {
 		var obj map[string]any
 		if err := json.Unmarshal(item, &obj); err != nil {
 			continue
 		}
-		id := fmt.Sprintf("%v", lookupFieldValue(obj, "id"))
-		if id == "" || id == "<nil>" {
+		// Try common primary key field names in priority order.
+		var id string
+		for _, key := range []string{"id", "ID", "ticker", "event_ticker", "series_ticker", "key", "code", "uid", "uuid", "slug", "name"} {
+			if v := lookupFieldValue(obj, key); v != nil {
+				s := fmt.Sprintf("%v", v)
+				if s != "" && s != "<nil>" {
+					id = s
+					break
+				}
+			}
+		}
+		if id == "" {
+			skippedCount++
 			continue
 		}
 
@@ -383,6 +395,12 @@ func (s *Store) UpsertBatch(resourceType string, items []json.RawMessage) error 
 		); ftsErr != nil {
 			fmt.Fprintf(os.Stderr, "warning: FTS index update failed for %s/%s: %v\n", resourceType, id, ftsErr)
 		}
+	}
+
+	// Warn when most items in a batch lack an extractable ID — this likely
+	// means the API uses a primary key field we don't recognize yet.
+	if skippedCount > 0 && len(items) > 0 && skippedCount*2 > len(items) {
+		fmt.Fprintf(os.Stderr, "warning: %d/%d %s items skipped (no extractable ID field found)\n", skippedCount, len(items), resourceType)
 	}
 
 	return tx.Commit()
