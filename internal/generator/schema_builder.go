@@ -360,6 +360,7 @@ func allFieldsAreColumns(fields []string, columns []ColumnDef) bool {
 
 // toSnakeCase converts camelCase, PascalCase, or kebab-case to snake_case.
 func toSnakeCase(s string) string {
+	s = strings.ReplaceAll(s, ".", "_")
 	s = strings.ReplaceAll(s, "-", "_")
 
 	var result strings.Builder

@@ -44,7 +44,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			}
 {{- end}}
 {{- range .Endpoint.Params}}
-{{- if and .Required (not .Positional)}}
+{{- if and .Required (not .Positional) (not .Default)}}
 			if !cmd.Flags().Changed("{{flagName .Name}}") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "{{flagName .Name}}")
 			}
@@ -53,7 +53,7 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if or (eq .Endpoint.Method "POST") (eq .Endpoint.Method "PUT") (eq .Endpoint.Method "PATCH")}}
 			if !stdinBody {
 {{- range .Endpoint.Body}}
-{{- if .Required}}
+{{- if and .Required (not .Default)}}
 				if !cmd.Flags().Changed("{{flagName .Name}}") && !flags.dryRun {
 					return fmt.Errorf("required flag \"%s\" not set", "{{flagName .Name}}")
 				}
@@ -74,7 +74,9 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s %s <%s>", cmd.Root().Name(), cmd.CommandPath(), "{{.Name}}"))
 			}
 {{- end}}
+{{- if pathContainsParam $.Endpoint.Path .Name}}
 			path = replacePathParam(path, "{{.Name}}", args[{{$i}}])
+{{- end}}
 {{- end}}
 {{- end}}
 {{- range .Endpoint.Params}}
@@ -95,7 +97,10 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- if .Endpoint.Pagination}}
 {{- if .HasStore}}
 			data, prov, err := resolvePaginatedRead(c, flags, "{{lower .ResourceName}}", path, map[string]string{
-{{- range .Endpoint.Params}}
+{{- range $i, $p := .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+				"{{.Name}}": args[{{$i}}],
+{{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel .Name}}),
 {{- end}}
@@ -103,7 +108,10 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 			}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
 			data, err := paginatedGet(c, path, map[string]string{
-{{- range .Endpoint.Params}}
+{{- range $i, $p := .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+				"{{.Name}}": args[{{$i}}],
+{{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel .Name}}),
 {{- end}}
@@ -112,7 +120,10 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 {{- end}}
 {{- else}}
 			params := map[string]string{}
-{{- range .Endpoint.Params}}
+{{- range $i, $p := .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{$i}}]
+{{- end}}
 {{- if and (not .Positional) (not .PathParam)}}
 			if flag{{camel .Name}} != {{zeroValForParam .Name .Type}} {
 				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel .Name}})

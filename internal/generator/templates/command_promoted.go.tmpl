@@ -28,7 +28,7 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 		Example: "  {{modulePath}} {{.PromotedName}}",
 		RunE: func(cmd *cobra.Command, args []string) error {
 {{- range .Endpoint.Params}}
-{{- if and .Required (not .Positional)}}
+{{- if and .Required (not .Positional) (not .Default)}}
 			if !cmd.Flags().Changed("{{flagName .Name}}") && !flags.dryRun {
 				return fmt.Errorf("required flag \"%s\" not set", "{{flagName .Name}}")
 			}
@@ -45,14 +45,19 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			if len(args) < {{add $i 1}} {
 				return usageErr(fmt.Errorf("{{.Name}} is required\nUsage: %s %s <%s>", cmd.Root().Name(), cmd.CommandPath(), "{{.Name}}"))
 			}
+{{- if pathContainsParam $.Endpoint.Path .Name}}
 			path = replacePathParam(path, "{{.Name}}", args[{{$i}}])
+{{- end}}
 {{- end}}
 {{- end}}
 
 {{- if .Endpoint.Pagination}}
 {{- if .HasStore}}
 			data, prov, err := resolvePaginatedRead(c, flags, "{{lower .ResourceName}}", path, map[string]string{
-{{- range .Endpoint.Params}}
+{{- range $i, $p := .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+				"{{.Name}}": args[{{$i}}],
+{{- end}}
 {{- if not .Positional}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel .Name}}),
 {{- end}}
@@ -60,7 +65,10 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 			}, flagAll, "{{.Endpoint.Pagination.CursorParam}}", "{{.Endpoint.Pagination.NextCursorPath}}", "{{.Endpoint.Pagination.HasMoreField}}")
 {{- else}}
 			data, err := paginatedGet(c, path, map[string]string{
-{{- range .Endpoint.Params}}
+{{- range $i, $p := .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+				"{{.Name}}": args[{{$i}}],
+{{- end}}
 {{- if not .Positional}}
 				"{{.Name}}": fmt.Sprintf("%v", flag{{camel .Name}}),
 {{- end}}
@@ -69,7 +77,10 @@ func new{{camel .PromotedName}}PromotedCmd(flags *rootFlags) *cobra.Command {
 {{- end}}
 {{- else}}
 			params := map[string]string{}
-{{- range .Endpoint.Params}}
+{{- range $i, $p := .Endpoint.Params}}
+{{- if and .Positional (not (pathContainsParam $.Endpoint.Path .Name))}}
+			params["{{.Name}}"] = args[{{$i}}]
+{{- end}}
 {{- if not .Positional}}
 			if flag{{camel .Name}} != {{zeroVal .Type}} {
 				params["{{.Name}}"] = fmt.Sprintf("%v", flag{{camel .Name}})

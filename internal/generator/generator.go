@@ -164,6 +164,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"envName":  func(s string) string { return strings.ToUpper(strings.ReplaceAll(s, "-", "_")) },
 		"safeName": safeSQLName,
+		"pathContainsParam": func(path, name string) bool {
+			return strings.Contains(path, "{"+name+"}")
+		},
 		"safeJoin": func(fields []string, sep string) string {
 			safe := make([]string, len(fields))
 			for i, f := range fields {
