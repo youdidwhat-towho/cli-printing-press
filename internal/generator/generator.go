@@ -1024,6 +1024,18 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	// Top 3 novel features drive the root --help Long description. The cap
+	// keeps help output compact; full list lives in README/SKILL. Sliced off
+	// NovelFeatures which is already the verified-built subset when dogfood
+	// has run.
+	var topNovel []NovelFeature
+	if n := len(g.NovelFeatures); n > 0 {
+		limit := n
+		if limit > 3 {
+			limit = 3
+		}
+		topNovel = g.NovelFeatures[:limit]
+	}
 	rootData := struct {
 		*spec.APISpec
 		VisionSet             VisionTemplateSet
@@ -1032,6 +1044,8 @@ func (g *Generator) Generate() error {
 		InsightConstructors   []string
 		PromotedCommands      []PromotedCommand
 		PromotedResourceNames map[string]bool
+		Narrative             *ReadmeNarrative
+		TopNovelFeatures      []NovelFeature
 	}{
 		APISpec:               g.Spec,
 		VisionSet:             g.VisionSet,
@@ -1040,6 +1054,8 @@ func (g *Generator) Generate() error {
 		InsightConstructors:   renderedInsightConstructors,
 		PromotedCommands:      promotedCommands,
 		PromotedResourceNames: promotedResourceNames,
+		Narrative:             g.Narrative,
+		TopNovelFeatures:      topNovel,
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)

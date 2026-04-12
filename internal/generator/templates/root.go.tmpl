@@ -40,8 +40,29 @@ func Execute() error {
 	var flags rootFlags
 
 	rootCmd := &cobra.Command{
-		Use:           "{{.Name}}-pp-cli",
-		Short:         "Manage {{.Name}} resources via the {{.Name}} API",
+		Use:   "{{.Name}}-pp-cli",
+{{- if and .Narrative .Narrative.Headline}}
+		Short: {{backtick}}{{humanName .Name}} CLI — {{.Narrative.Headline}}{{backtick}},
+{{- else}}
+		Short: "Manage {{.Name}} resources via the {{.Name}} API",
+{{- end}}
+{{- if .TopNovelFeatures}}
+		Long: {{backtick}}{{humanName .Name}} CLI{{if and .Narrative .Narrative.Headline}} — {{.Narrative.Headline}}{{end}}
+
+Highlights (not in the official API docs):
+{{- range .TopNovelFeatures}}
+  • {{.Command}}   {{.Description}}
+{{- end}}
+
+Agent mode: add --agent to any command for JSON output + non-interactive mode.
+Health check: run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.
+See README.md or the bundled SKILL.md for recipes.{{backtick}},
+{{- else}}
+		Long: {{backtick}}Manage {{.Name}} resources via the {{.Name}} API.
+
+Add --agent to any command for JSON output + non-interactive mode.
+Run '{{.Name}}-pp-cli doctor' to verify auth and connectivity.{{backtick}},
+{{- end}}
 		SilenceUsage: true,
 		Version:      version,
 	}
