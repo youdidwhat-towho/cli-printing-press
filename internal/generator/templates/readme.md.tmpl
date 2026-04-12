@@ -244,10 +244,12 @@ Verifies configuration{{if and (ne .Auth.Type "") (ne .Auth.Type "none")}}, cred
 ## Configuration
 
 Config file: `{{.Config.Path}}`
+{{- if .Auth.EnvVars}}
 
 Environment variables:
 {{- range .Auth.EnvVars}}
 - `{{.}}`
+{{- end}}
 {{- end}}
 
 ## Troubleshooting

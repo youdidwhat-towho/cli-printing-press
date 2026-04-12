@@ -114,6 +114,48 @@ func TestGeneratedREADMEHasNoHallucinatedCookbook(t *testing.T) {
 		"README should not reference an unimplemented export command")
 }
 
+// TestEmptyEnvVarsSectionHidden asserts the Environment variables subheader
+// is not rendered when the spec has no env vars (e.g., cookie-based auth).
+// Previously the header shipped with no bullets underneath — a dangling
+// "Environment variables:" line followed by a blank paragraph.
+func TestEmptyEnvVarsSectionHidden(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "noenvvars",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		// Cookie auth: no env vars configured.
+		Auth: spec.AuthConfig{
+			Type:    "cookie",
+			EnvVars: nil,
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/noenvvars-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"items": {
+				Description: "Manage items",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/items", Description: "List items"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "noenvvars-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	readme, err := os.ReadFile(filepath.Join(outputDir, "README.md"))
+	require.NoError(t, err)
+	content := string(readme)
+
+	assert.False(t, strings.Contains(content, "Environment variables:"),
+		"README should not render an Environment variables header when .Auth.EnvVars is empty")
+}
+
 // TestOutputFormatsUsesRealCommandExample asserts the Output Formats block
 // renders a resource+endpoint pair that actually exists in the spec. The
 // previous template hard-coded `{firstResource} list`, which produced
