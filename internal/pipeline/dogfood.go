@@ -192,11 +192,7 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 	}
 	built := make([]NovelFeature, 0)
 	for _, nf := range research.NovelFeatures {
-		// The command field may be a subcommand path like "issues stale".
-		// Check if the leaf command name is registered.
-		parts := strings.Fields(nf.Command)
-		leaf := parts[len(parts)-1]
-		if registeredCmds[leaf] {
+		if matchNovelFeature(nf, registeredCmds) {
 			result.Found++
 			built = append(built, nf)
 		} else {
@@ -211,6 +207,88 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 	}
 
 	return result
+}
+
+// matchNovelFeature runs the three-pass matcher — exact, prefix, alias —
+// against the set of registered command Use: names. Returns true if the
+// planned feature has a plausible corresponding built command.
+//
+// Why this is three passes:
+//   - Exact: planned command leaf equals a registered Use: name. The happy
+//     path (e.g. planned "portfolio perf", built "perf" subcommand).
+//   - Prefix: during implementation, planners frequently hyphenate or
+//     specialize the command. Planned "auth login --chrome" becomes built
+//     "login-chrome"; planned "options --moneyness" becomes built
+//     "options-chain". Either direction of prefix relationship counts.
+//   - Alias: escape hatch for cases the matcher can't infer — planner records
+//     alternate names in research.json's `aliases: []`.
+//
+// The matcher strips flag tokens (anything starting with "-") from the planned
+// command before extracting the leaf, because flags aren't command names.
+// "options --moneyness otm --max-dte 45" reduces to leaf "options".
+func matchNovelFeature(nf NovelFeature, registered map[string]bool) bool {
+	leaf := strings.ToLower(commandLeaf(nf.Command))
+	if leaf == "" {
+		return false
+	}
+
+	// Pass 1: exact
+	if registered[leaf] {
+		return true
+	}
+
+	// Pass 2: prefix — either direction. Built command may be a hyphenated
+	// specialization (planned "options" → built "options-chain") or the planner
+	// may have been more specific than the actual binding (planned "earnings-
+	// calendar" is substring-matched by built "earnings"). Only hyphen
+	// boundaries count as prefix to avoid substring false positives like
+	// "options" matching "op".
+	for use := range registered {
+		if strings.HasPrefix(use, leaf+"-") || strings.HasPrefix(leaf, use+"-") {
+			return true
+		}
+	}
+
+	// Pass 3: aliases declared in research.json. Each alias is matched with
+	// the same exact + prefix rules so planners don't need to list every
+	// hyphen variant.
+	for _, alias := range nf.Aliases {
+		aliasLeaf := strings.ToLower(commandLeaf(alias))
+		if aliasLeaf == "" {
+			continue
+		}
+		if registered[aliasLeaf] {
+			return true
+		}
+		for use := range registered {
+			if strings.HasPrefix(use, aliasLeaf+"-") || strings.HasPrefix(aliasLeaf, use+"-") {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
+// commandLeaf strips flag tokens (anything beginning with "-") from a command
+// string and returns the last remaining token. "auth login --chrome" → "login";
+// "options --moneyness otm" → "options" (subsequent tokens are flag values).
+//
+// The rule "stop at first flag" mirrors how users describe commands in plans —
+// the command itself appears before any flag annotation.
+func commandLeaf(cmd string) string {
+	tokens := strings.Fields(cmd)
+	base := make([]string, 0, len(tokens))
+	for _, t := range tokens {
+		if strings.HasPrefix(t, "-") {
+			break
+		}
+		base = append(base, t)
+	}
+	if len(base) == 0 {
+		return ""
+	}
+	return base[len(base)-1]
 }
 
 // collectRegisteredCommands returns a set of cobra Use: names found in the

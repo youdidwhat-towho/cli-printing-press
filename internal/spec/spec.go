@@ -38,7 +38,7 @@ type RequiredHeader struct {
 }
 
 type AuthConfig struct {
-	Type             string   `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, none
+	Type             string   `yaml:"type" json:"type"` // api_key, oauth2, bearer_token, cookie, composed, session_handshake, none
 	Header           string   `yaml:"header" json:"header"`
 	Format           string   `yaml:"format" json:"format"`
 	EnvVars          []string `yaml:"env_vars" json:"env_vars"`
@@ -51,6 +51,22 @@ type AuthConfig struct {
 	CookieDomain     string   `yaml:"cookie_domain,omitempty" json:"cookie_domain,omitempty"` // domain to read browser cookies from (e.g. ".notion.so")
 	Cookies          []string `yaml:"cookies,omitempty" json:"cookies,omitempty"`             // named cookies to extract for composed auth (e.g. ["customerId", "authToken"])
 	Inferred         bool     `yaml:"inferred,omitempty" json:"inferred,omitempty"`           // true when auth was inferred from spec description, not declared in securitySchemes
+
+	// Session-handshake fields. Used only when Type == "session_handshake".
+	// The pattern: GET BootstrapURL to seed cookies → GET TokenURL to receive
+	// an anti-CSRF token (the "crumb" on Yahoo Finance, similarly named on
+	// Walmart, some streaming APIs, Facebook's internal graph) → pass that
+	// token on every subsequent data request as TokenParamName in TokenParamIn.
+	// The generator emits a cookie jar, disk-persisted session file, and auto-
+	// invalidation on InvalidateOnStatus responses.
+	BootstrapURL       string `yaml:"bootstrap_url,omitempty" json:"bootstrap_url,omitempty"`               // optional GET to seed cookies before token fetch (e.g. "https://fc.yahoo.com/")
+	SessionTokenURL    string `yaml:"session_token_url,omitempty" json:"session_token_url,omitempty"`       // endpoint that returns the token (e.g. "https://query2.finance.yahoo.com/v1/test/getcrumb"); distinct from TokenURL (OAuth) to avoid conflation
+	TokenFormat        string `yaml:"token_format,omitempty" json:"token_format,omitempty"`                 // "text" (raw body) or "json" (extract via TokenJSONPath); default "text"
+	TokenJSONPath      string `yaml:"token_json_path,omitempty" json:"token_json_path,omitempty"`           // when TokenFormat is "json", dot-path to the token field (e.g. "data.crumb")
+	TokenParamName     string `yaml:"token_param_name,omitempty" json:"token_param_name,omitempty"`         // parameter name to attach to requests (e.g. "crumb")
+	TokenParamIn       string `yaml:"token_param_in,omitempty" json:"token_param_in,omitempty"`             // "query" or "header"; default "query"
+	InvalidateOnStatus []int  `yaml:"invalidate_on_status,omitempty" json:"invalidate_on_status,omitempty"` // HTTP status codes that should invalidate the cached token and re-bootstrap (e.g. [401, 403])
+	SessionTTLHours    int    `yaml:"session_ttl_hours,omitempty" json:"session_ttl_hours,omitempty"`       // how long to trust a cached session (default 24)
 }
 
 type ConfigSpec struct {

@@ -43,6 +43,12 @@ type NovelFeature struct {
 	Command     string `json:"command"`
 	Description string `json:"description"`
 	Rationale   string `json:"rationale"`
+	// Aliases are optional alternate command paths that should be considered
+	// "this feature was built" during dogfood's novel-feature verification.
+	// Planners use this when a feature may ship under any of several command
+	// names (e.g. `["auth login-chrome", "auth browser-login"]`). Empty by
+	// default — the three-pass matcher still covers most natural drift.
+	Aliases []string `json:"aliases,omitempty"`
 }
 
 // CompetitorAnalysis holds intelligence gathered from a single competitor repo.

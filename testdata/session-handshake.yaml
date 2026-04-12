@@ -1,0 +1,37 @@
+name: yahoofin-demo
+description: "Demo spec for session_handshake auth type"
+version: "1.0.0"
+base_url: "https://query1.finance.yahoo.com"
+
+auth:
+  type: session_handshake
+  bootstrap_url: "https://fc.yahoo.com/"
+  session_token_url: "https://query2.finance.yahoo.com/v1/test/getcrumb"
+  token_format: text
+  token_param_name: crumb
+  token_param_in: query
+  in: query
+  header: crumb
+  invalidate_on_status: [401, 403]
+  session_ttl_hours: 24
+
+config:
+  format: toml
+  path: "~/.config/yahoofin-demo-pp-cli/config.toml"
+
+resources:
+  quote:
+    description: "Quotes"
+    endpoints:
+      list:
+        method: GET
+        path: "/v7/finance/quote"
+        description: "Get quotes for symbols"
+        params:
+          - name: symbols
+            type: string
+            required: true
+            description: "Comma-separated ticker symbols"
+        response:
+          type: array
+          item: Quote

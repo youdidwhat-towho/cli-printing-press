@@ -620,6 +620,17 @@ func (g *Generator) Generate() error {
 		return fmt.Errorf("rendering auth: %w", err)
 	}
 
+	// For session_handshake auth, emit the session manager helper alongside
+	// the client. This was previously hand-patched in every CLI that used a
+	// crumb/CSRF-token pattern (yahoo-finance and any future reverse-engineered
+	// API with anti-CSRF on JSON endpoints). See retro issue #174 WU-2.
+	if g.Spec.Auth.Type == "session_handshake" {
+		sessionPath := filepath.Join("internal", "client", "session.go")
+		if err := g.renderTemplate("session_handshake.go.tmpl", sessionPath, g.Spec); err != nil {
+			return fmt.Errorf("rendering session manager: %w", err)
+		}
+	}
+
 	// MCP server: generate cmd/{name}-pp-mcp/ entry point and internal/mcp/ package
 	if g.VisionSet.MCP || true { // Always generate MCP for now
 		mcpDirs := []string{

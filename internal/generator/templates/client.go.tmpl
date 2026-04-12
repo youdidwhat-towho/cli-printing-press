@@ -31,6 +31,9 @@ type Client struct {
 	NoCache    bool
 	cacheDir   string
 	limiter    *adaptiveLimiter
+{{- if eq .Auth.Type "session_handshake"}}
+	Session    *SessionManager
+{{- end}}
 }
 
 // adaptiveLimiter provides proactive rate limiting with adaptive ceiling discovery.
@@ -183,6 +186,19 @@ func (e *APIError) Error() string {
 func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 	homeDir, _ := os.UserHomeDir()
 	cacheDir := filepath.Join(homeDir, ".cache", "{{.Name}}-pp-cli")
+{{- if eq .Auth.Type "session_handshake"}}
+	sess := newSessionManager(timeout)
+	httpClient := &http.Client{Timeout: timeout}
+	sess.AttachTo(httpClient)
+	return &Client{
+		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
+		Config:     cfg,
+		HTTPClient: httpClient,
+		cacheDir:   cacheDir,
+		limiter:    newAdaptiveLimiter(rateLimit),
+		Session:    sess,
+	}
+{{- else}}
 	return &Client{
 		BaseURL:    strings.TrimRight(cfg.BaseURL, "/"),
 		Config:     cfg,
@@ -190,6 +206,7 @@ func New(cfg *config.Config, timeout time.Duration, rateLimit float64) *Client {
 		cacheDir:   cacheDir,
 		limiter:    newAdaptiveLimiter(rateLimit),
 	}
+{{- end}}
 }
 
 // RateLimit returns the current effective rate limit in req/s. Returns 0 if disabled.
@@ -294,9 +311,31 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		bodyBytes = b
 	}
 
+	// Resolve auth material before the dry-run branch so --dry-run can preview
+	// exactly what would be sent. Uses only cached credentials; a token that
+	// requires a network refresh will be re-fetched on the live request path,
+	// not during dry-run.
+	authHeader, err := c.authHeader()
+	if err != nil {
+		return nil, 0, err
+	}
+{{- if eq .Auth.Type "session_handshake"}}
+	// For session-handshake auth, authHeader() only returns the cached token
+	// (or empty). On the live path, ensure a fresh token if none is cached.
+	// Dry-run deliberately skips this — we want previews to reflect what's
+	// cached, never trigger a network fetch.
+	if !c.DryRun && authHeader == "" && c.Session != nil {
+		tok, terr := c.Session.EnsureToken()
+		if terr != nil {
+			return nil, 0, terr
+		}
+		authHeader = tok
+	}
+{{- end}}
+
 	// Build the request for dry-run display or actual execution
 	if c.DryRun {
-		return c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides)
+		return c.dryRun(method, targetURL, path, params, bodyBytes, headerOverrides, authHeader)
 	}
 
 	const maxRetries = 3
@@ -305,6 +344,18 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	for attempt := 0; attempt <= maxRetries; attempt++ {
 		// Proactive rate limiting — wait before sending
 		c.limiter.Wait()
+{{- if eq .Auth.Type "session_handshake"}}
+
+		// Re-resolve session token each iteration — may have been invalidated
+		// by a previous attempt returning 401/403.
+		if authHeader == "" && c.Session != nil {
+			tok, terr := c.Session.EnsureToken()
+			if terr != nil {
+				return nil, 0, terr
+			}
+			authHeader = tok
+		}
+{{- end}}
 
 {{- if eq .ClientPattern "proxy-envelope"}}
 		// Build the proxy envelope
@@ -351,10 +402,6 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 		}
 {{- end}}
 
-		authHeader, err := c.authHeader()
-		if err != nil {
-			return nil, 0, err
-		}
 		if authHeader != "" {
 {{- if and .Auth .Auth.In (eq .Auth.In "query")}}
 			// API key goes in query parameter
@@ -409,6 +456,18 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 			lastErr = apiErr
 			continue
 		}
+{{- if eq .Auth.Type "session_handshake"}}
+
+		// Session-handshake invalidation: some status codes indicate the token
+		// was rejected. Clear the cache and retry once; EnsureToken() at the
+		// top of the next loop iteration will re-bootstrap.
+		if c.Session != nil && c.Session.ShouldInvalidate(resp.StatusCode) && attempt < maxRetries && authHeader != "" {
+			c.Session.Invalidate()
+			authHeader = "" // force re-fetch on next iteration
+			lastErr = apiErr
+			continue
+		}
+{{- end}}
 
 		// Server error - retry with backoff
 		if resp.StatusCode >= 500 && attempt < maxRetries {
@@ -426,7 +485,10 @@ func (c *Client) do(method, path string, params map[string]string, body any, hea
 	return nil, 0, lastErr
 }
 
-func (c *Client) dryRun(method, targetURL, path string, params map[string]string, body []byte, headerOverrides map[string]string) (json.RawMessage, int, error) {
+// dryRun prints the outgoing request exactly as the live path would send it,
+// using the auth material already resolved in `do()`. Never triggers a network
+// call — the caller is responsible for passing cached auth material only.
+func (c *Client) dryRun(method, targetURL, path string, params map[string]string, body []byte, headerOverrides map[string]string, authHeader string) (json.RawMessage, int, error) {
 {{- if eq .ClientPattern "proxy-envelope"}}
 	// Show the proxy envelope that would be sent
 	envelope := proxyEnvelope{
@@ -449,6 +511,13 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 			}
 		}
 	}
+{{- if and .Auth .Auth.In (eq .Auth.In "query")}}
+	// Auth material travels as a query parameter on the live request — surface
+	// it in the preview so users can verify wiring.
+	if authHeader != "" {
+		fmt.Fprintf(os.Stderr, "  ?%s=%s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}api_key{{end}}", maskToken(authHeader))
+	}
+{{- end}}
 	if body != nil {
 		var pretty json.RawMessage
 		if json.Unmarshal(body, &pretty) == nil {
@@ -459,13 +528,11 @@ func (c *Client) dryRun(method, targetURL, path string, params map[string]string
 		}
 	}
 {{- end}}
-	authHeader, err := c.authHeader()
-	if err != nil {
-		return nil, 0, err
-	}
+{{- if not (and .Auth .Auth.In (eq .Auth.In "query"))}}
 	if authHeader != "" {
-		fmt.Fprintf(os.Stderr, "  Authorization: %s\n", maskToken(authHeader))
+		fmt.Fprintf(os.Stderr, "  %s: %s\n", "{{if .Auth.Header}}{{.Auth.Header}}{{else}}Authorization{{end}}", maskToken(authHeader))
 	}
+{{- end}}
 	fmt.Fprintf(os.Stderr, "\n(dry run - no request sent)\n")
 	return json.RawMessage(`{"dry_run": true}`), 0, nil
 }

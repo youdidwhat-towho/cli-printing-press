@@ -18,11 +18,12 @@ type DiscoveredParam struct {
 
 // DiscoveredEndpoint represents a single API endpoint found by a source.
 type DiscoveredEndpoint struct {
-	Method     string            // HTTP method (GET, POST, etc.)
-	Path       string            // URL path (e.g., "/v1/users", "/users/:id")
-	Params     []DiscoveredParam // query parameters extracted from SDK code
-	SourceTier string            // one of the Tier* constants
-	SourceName string            // e.g., "@notionhq/client", "github-code-search"
+	Method        string            // HTTP method (GET, POST, etc.)
+	Path          string            // URL path (e.g., "/v1/users", "/users/:id")
+	Params        []DiscoveredParam // query parameters extracted from SDK code
+	SourceTier    string            // one of the Tier* constants
+	SourceName    string            // e.g., "@notionhq/client", "github-code-search"
+	OriginBaseURL string            // nearest base URL observed in the same source file (e.g., "https://api.notion.com"); empty if not detectable
 }
 
 // DiscoveredAuth represents an authentication pattern detected in SDK source code.
@@ -45,9 +46,10 @@ type SourceResult struct {
 
 // AggregatedEndpoint is a deduplicated endpoint with cross-source metadata.
 type AggregatedEndpoint struct {
-	Method      string
-	Path        string            // normalized
-	Params      []DiscoveredParam // union-merged params across sources, sorted by name
-	SourceTier  string            // highest tier across sources
-	SourceCount int               // number of distinct sources
+	Method         string
+	Path           string            // normalized
+	Params         []DiscoveredParam // union-merged params across sources, sorted by name
+	SourceTier     string            // highest tier across sources
+	SourceCount    int               // number of distinct sources
+	OriginBaseURLs []string          // distinct base URLs observed in source files that contributed this endpoint; used for host filtering
 }

@@ -808,12 +808,80 @@ func scoreVision(dir string) int {
 	return score
 }
 
+// registeredCommandFiles returns the set of cli/*.go filenames whose command
+// constructor is referenced by root.go. Files without a registered constructor
+// should not inflate workflow/insight scores even if they match prefix or
+// behavioral heuristics — they're orphans, dead code, or half-built commands
+// that the user cannot actually invoke.
+//
+// Returns an empty map if root.go is missing or parsing yields no matches so
+// callers can fall open to the prior heuristic behavior (older or partial CLI
+// trees where the registration graph isn't parseable).
+func registeredCommandFiles(cliDir string) map[string]bool {
+	rootContent := readFileContent(filepath.Join(cliDir, "root.go"))
+	if rootContent == "" {
+		return map[string]bool{}
+	}
+
+	// Match every `newXxxCmd(` invocation — but not definitions. root.go may
+	// contain helper function declarations (e.g. `func newRootCmd()`) that we
+	// must not count as registrations. Strip `func Name(` declaration heads
+	// before scanning so only call-sites contribute to the ctor set.
+	funcDeclRe := regexp.MustCompile(`(?m)^func\s+\w+\s*\(`)
+	scanContent := funcDeclRe.ReplaceAllString(rootContent, "")
+
+	ctorRe := regexp.MustCompile(`\bnew([A-Z][A-Za-z0-9_]*)Cmd\s*\(`)
+	matches := ctorRe.FindAllStringSubmatch(scanContent, -1)
+	if len(matches) == 0 {
+		return map[string]bool{}
+	}
+	ctors := make(map[string]bool, len(matches))
+	for _, m := range matches {
+		ctors["new"+m[1]+"Cmd"] = true
+	}
+
+	// Walk cli/*.go and map each file to the constructor it defines. Use a
+	// regexp for the declaration site to avoid depending on go/parser for one
+	// lookup (keeps the scorer dependency-free, which matters because it runs
+	// against third-party generated trees).
+	defRe := regexp.MustCompile(`^func\s+(new[A-Z][A-Za-z0-9_]*Cmd)\s*\(`)
+	entries, err := os.ReadDir(cliDir)
+	if err != nil {
+		return map[string]bool{}
+	}
+	result := make(map[string]bool)
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		content := readFileContent(filepath.Join(cliDir, e.Name()))
+		for _, line := range strings.Split(content, "\n") {
+			sm := defRe.FindStringSubmatch(line)
+			if sm == nil {
+				continue
+			}
+			if ctors[sm[1]] {
+				result[e.Name()] = true
+				break
+			}
+		}
+	}
+	return result
+}
+
 func scoreWorkflows(dir string) int {
 	cliDir := filepath.Join(dir, "internal", "cli")
 	entries, err := os.ReadDir(cliDir)
 	if err != nil {
 		return 0
 	}
+
+	// Build the set of files whose command constructor is actually registered in
+	// root.go. Files that define constructors never added to the command tree —
+	// whether orphaned, dead, or pending — should not inflate the score. This
+	// also prevents dead-code removal from dropping the score: a file whose
+	// constructor isn't registered isn't counted in the first place.
+	registeredFiles := registeredCommandFiles(cliDir)
 
 	// Some prefixes overlap with insightPrefixes intentionally — per Steinberger,
 	// analytics/insights ARE compound commands (the visionary research plan lists
@@ -830,6 +898,14 @@ func scoreWorkflows(dir string) int {
 			continue
 		}
 		if infraCoreFiles[e.Name()] {
+			continue
+		}
+
+		// If root.go registration is discoverable, require the file to define a
+		// registered constructor. Falls open when no registrations are found at
+		// all (older CLIs or partial builds) so we don't zero out scores
+		// unexpectedly.
+		if len(registeredFiles) > 0 && !registeredFiles[e.Name()] {
 			continue
 		}
 
@@ -891,6 +967,8 @@ func scoreInsight(dir string) int {
 		return 0
 	}
 
+	registeredFiles := registeredCommandFiles(cliDir)
+
 	insightPrefixes := []string{"health", "similar", "bottleneck", "trends", "patterns", "forecast",
 		"stats", "conflicts", "stale", "analytics", "busiest", "velocity",
 		"utilization", "coverage", "gaps", "noshow"}
@@ -901,6 +979,9 @@ func scoreInsight(dir string) int {
 			continue
 		}
 		if infraCoreFiles[e.Name()] {
+			continue
+		}
+		if len(registeredFiles) > 0 && !registeredFiles[e.Name()] {
 			continue
 		}
 		name := strings.ToLower(e.Name())

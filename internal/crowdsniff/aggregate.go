@@ -48,6 +48,7 @@ func Aggregate(results []SourceResult) ([]AggregatedEndpoint, []string) {
 		bestTier string
 		sources  map[string]struct{} // distinct source names
 		params   map[string]paramEntry
+		origins  map[string]struct{} // distinct origin base URLs contributed by sources
 	}
 
 	index := make(map[endpointKey]*accumulator)
@@ -67,6 +68,7 @@ func Aggregate(results []SourceResult) ([]AggregatedEndpoint, []string) {
 				acc = &accumulator{
 					sources: make(map[string]struct{}),
 					params:  make(map[string]paramEntry),
+					origins: make(map[string]struct{}),
 				}
 				index[key] = acc
 				order = append(order, key)
@@ -76,6 +78,9 @@ func Aggregate(results []SourceResult) ([]AggregatedEndpoint, []string) {
 				acc.bestTier = ep.SourceTier
 			}
 			acc.sources[ep.SourceName] = struct{}{}
+			if ep.OriginBaseURL != "" {
+				acc.origins[ep.OriginBaseURL] = struct{}{}
+			}
 
 			// Union-merge params: prefer metadata from higher-tier source.
 			for _, p := range ep.Params {
@@ -103,10 +108,75 @@ func Aggregate(results []SourceResult) ([]AggregatedEndpoint, []string) {
 		if len(acc.params) > 0 {
 			ep.Params = sortedParams(acc.params)
 		}
+		if len(acc.origins) > 0 {
+			ep.OriginBaseURLs = make([]string, 0, len(acc.origins))
+			for o := range acc.origins {
+				ep.OriginBaseURLs = append(ep.OriginBaseURLs, o)
+			}
+			sort.Strings(ep.OriginBaseURLs)
+		}
 		aggregated = append(aggregated, ep)
 	}
 
 	return aggregated, deduplicateStrings(baseURLs)
+}
+
+// FilterByHost drops aggregated endpoints whose origin base URL hosts don't
+// match the target host. Endpoints with no known origin (nothing detected in
+// source file context) are kept — we fall open when signal is absent rather
+// than silently losing candidate endpoints.
+//
+// Returns (kept, dropped) so callers can report how much noise was filtered
+// and let users inspect the drops if needed.
+func FilterByHost(endpoints []AggregatedEndpoint, targetHost string) (kept []AggregatedEndpoint, dropped []AggregatedEndpoint) {
+	targetHost = strings.ToLower(strings.TrimSpace(targetHost))
+	if targetHost == "" {
+		return endpoints, nil
+	}
+	for _, ep := range endpoints {
+		if len(ep.OriginBaseURLs) == 0 {
+			// No origin signal — keep (permissive default).
+			kept = append(kept, ep)
+			continue
+		}
+		matched := false
+		for _, origin := range ep.OriginBaseURLs {
+			if hostFromURL(origin) == targetHost {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			kept = append(kept, ep)
+		} else {
+			dropped = append(dropped, ep)
+		}
+	}
+	return kept, dropped
+}
+
+// hostFromURL extracts the lowercased host from a URL, stripping scheme,
+// port, and path. Returns empty string on parse failure.
+func hostFromURL(rawURL string) string {
+	s := strings.TrimSpace(rawURL)
+	if s == "" {
+		return ""
+	}
+	// Strip scheme
+	if idx := strings.Index(s, "://"); idx >= 0 {
+		s = s[idx+3:]
+	}
+	// Strip path / query / fragment
+	for _, sep := range []byte{'/', '?', '#'} {
+		if i := strings.IndexByte(s, sep); i >= 0 {
+			s = s[:i]
+		}
+	}
+	// Strip port
+	if i := strings.IndexByte(s, ':'); i >= 0 {
+		s = s[:i]
+	}
+	return strings.ToLower(s)
 }
 
 // NormalizePath unifies parameter syntax and replaces concrete values with placeholders.

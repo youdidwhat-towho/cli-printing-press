@@ -38,9 +38,16 @@ var (
 
 // GrepEndpoints scans source code content for API endpoint patterns.
 // It returns discovered endpoints and base URL candidates.
+//
+// As the scan walks lines in order, each base URL match updates a "current
+// origin" that subsequent endpoints inherit via OriginBaseURL. When a source
+// file wraps multiple unrelated APIs (e.g. a finance aggregator that calls
+// Polygon, FRED, and Tiingo), this lets downstream filtering drop endpoints
+// whose origin doesn't match the user's target host.
 func GrepEndpoints(content, sourceName, sourceTier string) ([]DiscoveredEndpoint, []string) {
 	var endpoints []DiscoveredEndpoint
 	var baseURLs []string
+	currentOrigin := "" // most recently observed base URL in this file's scan order
 
 	lines := strings.Split(content, "\n")
 
@@ -50,25 +57,112 @@ func GrepEndpoints(content, sourceName, sourceTier string) ([]DiscoveredEndpoint
 			continue
 		}
 
-		// Extract base URL candidates.
+		// Extract base URL candidates and update the running origin. Extractors
+		// called below stamp endpoints with `currentOrigin` so callers can
+		// filter by host later.
 		if matches := baseURLPattern.FindStringSubmatch(line); len(matches) > 1 {
 			baseURLs = append(baseURLs, matches[1])
+			currentOrigin = matches[1]
 		}
 
 		// Try to extract method + path from method call patterns.
 		eps := extractMethodCallEndpoints(line, sourceName, sourceTier)
+		stampOrigin(eps, currentOrigin)
 		endpoints = append(endpoints, eps...)
 
-		// Try to extract from fetch() calls.
+		// Try to extract from fetch() calls. Fetch URLs may contain an absolute
+		// host — when they do, record it as the endpoint's origin directly so
+		// inline-URL contamination is caught even without a preceding baseURL
+		// variable.
 		eps = extractFetchEndpoints(line, sourceName, sourceTier)
+		stampOriginFetch(eps, currentOrigin)
 		endpoints = append(endpoints, eps...)
 
 		// Try to extract paths from URL path literals when near an HTTP method.
 		eps = extractContextualPathEndpoints(line, sourceName, sourceTier)
+		stampOrigin(eps, currentOrigin)
 		endpoints = append(endpoints, eps...)
 	}
 
 	return deduplicateEndpoints(endpoints), deduplicateStrings(baseURLs)
+}
+
+// stampOrigin assigns the current base URL context to every endpoint that
+// lacks one. Endpoints may already carry an origin extracted from an inline
+// absolute URL (see stampOriginFetch); those are preserved.
+func stampOrigin(eps []DiscoveredEndpoint, origin string) {
+	if origin == "" {
+		return
+	}
+	for i := range eps {
+		if eps[i].OriginBaseURL == "" {
+			eps[i].OriginBaseURL = origin
+		}
+	}
+}
+
+// stampOriginFetch handles fetch-style extractions where the path argument is
+// sometimes an absolute URL (`fetch("https://other-api.com/foo")`). When so,
+// the scheme+host becomes the endpoint's own origin — more precise than the
+// enclosing file's baseURL variable. Otherwise falls back to stampOrigin.
+func stampOriginFetch(eps []DiscoveredEndpoint, fileOrigin string) {
+	for i := range eps {
+		if eps[i].OriginBaseURL != "" {
+			continue
+		}
+		if inline := extractInlineOrigin(eps[i].Path); inline != "" {
+			eps[i].OriginBaseURL = inline
+			// The path should be just the path component now, but
+			// extractContextualPathEndpoints stripped the scheme already via
+			// urlPathLiteral. If Path still carries a scheme (from fetch
+			// parser), normalize it.
+			if strings.HasPrefix(eps[i].Path, "http://") || strings.HasPrefix(eps[i].Path, "https://") {
+				if u := parseURLSilent(eps[i].Path); u != "" {
+					eps[i].Path = u
+				}
+			}
+			continue
+		}
+		if fileOrigin != "" {
+			eps[i].OriginBaseURL = fileOrigin
+		}
+	}
+}
+
+// extractInlineOrigin returns the scheme+host portion of an absolute URL path
+// argument, or empty string if the argument is already a bare path.
+func extractInlineOrigin(path string) string {
+	if !strings.HasPrefix(path, "http://") && !strings.HasPrefix(path, "https://") {
+		return ""
+	}
+	// Split at the first slash after the scheme://host to isolate the origin.
+	// Use strings.IndexByte rather than net/url to avoid pulling in the full
+	// parser for every match.
+	idx := strings.Index(path, "://")
+	if idx < 0 {
+		return ""
+	}
+	rest := path[idx+3:]
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return path
+	}
+	return path[:idx+3+slash]
+}
+
+// parseURLSilent returns just the path portion of an absolute URL, or empty
+// string on failure.
+func parseURLSilent(absURL string) string {
+	idx := strings.Index(absURL, "://")
+	if idx < 0 {
+		return ""
+	}
+	rest := absURL[idx+3:]
+	slash := strings.IndexByte(rest, '/')
+	if slash < 0 {
+		return "/"
+	}
+	return rest[slash:]
 }
 
 // extractMethodCallEndpoints handles patterns like:

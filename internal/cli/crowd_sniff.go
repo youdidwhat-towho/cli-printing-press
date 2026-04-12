@@ -117,6 +117,27 @@ func runCrowdSniff(ctx context.Context, apiName, baseURL, outputPath string, asJ
 		return fmt.Errorf("base URL must use HTTPS: %s", resolvedBaseURL)
 	}
 
+	// Filter out endpoints whose origin doesn't match the resolved base URL.
+	// Community wrappers that glue together multiple APIs (common for financial,
+	// weather, and aggregator domains) would otherwise contaminate the spec
+	// with endpoints from Polygon, FRED, Tiingo, etc. when targeting Yahoo
+	// Finance — observed in retro #174.
+	targetHost := hostFromBaseURL(resolvedBaseURL)
+	if targetHost != "" {
+		kept, dropped := crowdsniff.FilterByHost(aggregated, targetHost)
+		if len(dropped) > 0 {
+			fmt.Fprintf(stderr, "filtered %d endpoint(s) from other origins (target host: %s)\n", len(dropped), targetHost)
+			for _, d := range dropped {
+				fmt.Fprintf(stderr, "  dropped: %s %s (origin(s): %s)\n", d.Method, d.Path, strings.Join(d.OriginBaseURLs, ", "))
+			}
+		}
+		aggregated = kept
+	}
+
+	if len(aggregated) == 0 {
+		return fmt.Errorf("no endpoints remained after host filtering for %q (target: %s)", apiName, targetHost)
+	}
+
 	apiSpec, err := crowdsniff.BuildSpec(apiName, resolvedBaseURL, aggregated, mergedAuth)
 	if err != nil {
 		return fmt.Errorf("building spec: %w", err)
@@ -202,4 +223,15 @@ func isHTTPS(rawURL string) bool {
 		return false
 	}
 	return strings.EqualFold(parsed.Scheme, "https")
+}
+
+// hostFromBaseURL returns the lowercase host of a URL (no scheme, no port).
+// Used by host-based endpoint filtering.
+func hostFromBaseURL(rawURL string) string {
+	parsed, err := url.Parse(rawURL)
+	if err != nil {
+		return ""
+	}
+	host := parsed.Hostname()
+	return strings.ToLower(host)
 }
