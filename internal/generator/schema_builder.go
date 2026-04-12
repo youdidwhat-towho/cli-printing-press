@@ -260,6 +260,8 @@ func collectTextFieldNames(r spec.Resource) []string {
 		"title": true, "name": true, "description": true,
 		"body": true, "content": true, "summary": true, "subject": true,
 		"text": true, "message": true, "comment": true, "note": true,
+		"notes": true, "tag": true, "tags": true, "label": true, "labels": true,
+		"category": true, "categories": true, "metadata": true,
 	}
 
 	seen := make(map[string]bool)

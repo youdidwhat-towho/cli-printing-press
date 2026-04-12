@@ -625,14 +625,107 @@ func classifyCommandKind(cmd *discoveredCommand, spec *openAPISpec) {
 }
 
 // workflowTestFlags returns flags needed for workflow commands that require --org or --repo.
+// Retained for explicit positional-arg patterns (e.g., changelog takes two positional
+// args, not flags — cobra won't surface them through the "required flag(s) not set"
+// error). Flag-shaped requirements are now discovered dynamically via inferRequiredFlags.
 func workflowTestFlags(cmdName string) []string {
 	switch cmdName {
-	case "pr-triage", "stale", "actions-health", "security", "contributors":
-		return []string{"--repo", "mock-owner/mock-repo"}
 	case "changelog":
 		return []string{"mock-owner", "mock-repo", "--since", "v0.0.1"}
 	default:
 		return nil
+	}
+}
+
+// requiredFlagsRe matches cobra's standard "required flag(s) ... not set" error.
+// Cobra emits the flag names quoted, comma-separated: required flag(s) "event", "year" not set
+var requiredFlagsRe = regexp.MustCompile(`required flag\(s\) ((?:"[^"]+"(?:, )?)+) not set`)
+
+// flagNameRe extracts quoted flag names from the required-flags error payload.
+var flagNameRe = regexp.MustCompile(`"([^"]+)"`)
+
+// inferRequiredFlags probes a command by running it with no args, parses cobra's
+// "required flag(s) ... not set" error if present, and returns synthetic --flag value
+// pairs the verifier can use to exercise the command. Returns nil when the command
+// has no required flags (or when probing fails — the caller falls back gracefully).
+func inferRequiredFlags(binary, cmdName string) []string {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	probe := exec.CommandContext(ctx, binary, cmdName)
+	out, _ := probe.CombinedOutput() // error expected when flags are missing
+
+	m := requiredFlagsRe.FindSubmatch(out)
+	if m == nil {
+		return nil
+	}
+
+	nameMatches := flagNameRe.FindAllSubmatch(m[1], -1)
+	if len(nameMatches) == 0 {
+		return nil
+	}
+
+	var args []string
+	for _, nm := range nameMatches {
+		flag := string(nm[1])
+		args = append(args, "--"+flag, syntheticFlagValue(flag))
+	}
+	return args
+}
+
+// syntheticFlagValue maps a required flag name to a synthetic test value. Shares
+// its philosophy with syntheticArgValue but keyed on flag names that appear in
+// "required flag(s)" errors. The mock server doesn't validate values, so any
+// non-empty string of the right shape works.
+func syntheticFlagValue(name string) string {
+	n := strings.ToLower(name)
+	switch n {
+	case "org", "organization", "owner":
+		return "mock-owner"
+	case "repo", "repository":
+		return "mock-owner/mock-repo"
+	case "team", "workspace", "project", "workspace-id", "project-id":
+		return "mock-project"
+	case "user", "username", "user-id", "account", "account-id":
+		return "mock-user"
+	case "event", "event-id", "game", "game-id", "match", "match-id":
+		return "mock-event-123"
+	case "season", "year":
+		return "2026"
+	case "sport", "league", "competition":
+		return "mock-league"
+	case "id", "uid", "uuid":
+		return "mock-id-123"
+	case "ticker", "symbol":
+		return "MOCK"
+	case "region", "location", "city":
+		return "mock-city"
+	case "date", "day":
+		return "2026-04-11"
+	case "since", "from", "start", "start-date":
+		return "2026-01-01"
+	case "until", "to", "end", "end-date":
+		return "2026-12-31"
+	case "query", "q", "search", "term":
+		return "mock-query"
+	case "name", "slug", "key":
+		return "mock-name"
+	case "type", "kind", "category":
+		return "mock-type"
+	case "status", "state":
+		return "active"
+	case "limit", "count", "size":
+		return "10"
+	case "format", "output":
+		return "json"
+	case "url", "endpoint", "base-url":
+		return "https://mock.example.com"
+	case "path", "file", "output-file":
+		return "/tmp/mock-file"
+	case "token", "api-key", "key-id", "secret":
+		return "mock-secret"
+	default:
+		return "mock-value"
 	}
 }
 
@@ -646,8 +739,13 @@ func runCommandTests(binary string, cmd discoveredCommand, mode string, env []st
 	// Test 1: --help
 	result.Help = runCLI(binary, []string{cmd.Name, "--help"}, env, 10*time.Second) == nil
 
-	// Get any required flags/args for this command
-	extraFlags := workflowTestFlags(cmd.Name)
+	// Get any required flags/args for this command.
+	// First, probe the binary for cobra-declared required flags (generic, spec-agnostic).
+	// Then fall back to the positional-arg map for commands that take bare positionals.
+	extraFlags := inferRequiredFlags(binary, cmd.Name)
+	if extraFlags == nil {
+		extraFlags = workflowTestFlags(cmd.Name)
+	}
 
 	// Build positional args + flags for test invocations
 	buildTestArgs := func(cmdName string, positionalArgs, flags []string, extra ...string) []string {

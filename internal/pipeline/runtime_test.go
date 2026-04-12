@@ -245,6 +245,91 @@ func TestSyntheticArgValue(t *testing.T) {
 	}
 }
 
+func TestSyntheticFlagValue(t *testing.T) {
+	tests := []struct {
+		name     string
+		expected string
+	}{
+		{"org", "mock-owner"},
+		{"repo", "mock-owner/mock-repo"},
+		{"event", "mock-event-123"},
+		{"game-id", "mock-event-123"},
+		{"season", "2026"},
+		{"sport", "mock-league"},
+		{"ticker", "MOCK"},
+		{"date", "2026-04-11"},
+		{"since", "2026-01-01"},
+		{"limit", "10"},
+		{"status", "active"},
+		// Case insensitive
+		{"Event", "mock-event-123"},
+		{"ORG", "mock-owner"},
+		// Unknown falls back to mock-value
+		{"unknown-flag", "mock-value"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.expected, syntheticFlagValue(tt.name))
+		})
+	}
+}
+
+func TestRequiredFlagsRegex(t *testing.T) {
+	tests := []struct {
+		name     string
+		output   string
+		expected []string
+	}{
+		{
+			name:     "single flag",
+			output:   `Error: required flag(s) "event" not set`,
+			expected: []string{"event"},
+		},
+		{
+			name:     "multiple flags",
+			output:   `Error: required flag(s) "event", "year" not set`,
+			expected: []string{"event", "year"},
+		},
+		{
+			name:     "three flags",
+			output:   `Error: required flag(s) "org", "repo", "branch" not set`,
+			expected: []string{"org", "repo", "branch"},
+		},
+		{
+			name:     "no required-flags error",
+			output:   `Error: unknown command "foo"`,
+			expected: nil,
+		},
+		{
+			name:     "surrounded by other output",
+			output:   "Usage: cli foo [flags]\n\nError: required flag(s) \"event\" not set\nRun 'cli foo --help'",
+			expected: []string{"event"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			m := requiredFlagsRe.FindStringSubmatch(tt.output)
+			if tt.expected == nil {
+				assert.Nil(t, m)
+				return
+			}
+			require.NotNil(t, m)
+			nameMatches := flagNameRe.FindAllStringSubmatch(m[1], -1)
+			got := make([]string, 0, len(nameMatches))
+			for _, nm := range nameMatches {
+				got = append(got, nm[1])
+			}
+			assert.Equal(t, tt.expected, got)
+		})
+	}
+}
+
+func TestInferRequiredFlags_UnknownBinaryReturnsNil(t *testing.T) {
+	// Probing a non-existent binary should return nil cleanly, not panic or hang.
+	result := inferRequiredFlags("/nonexistent/binary/path", "somecmd")
+	assert.Nil(t, result)
+}
+
 func TestParseSQLOutput(t *testing.T) {
 	tests := []struct {
 		name     string
