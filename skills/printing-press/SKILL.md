@@ -1600,6 +1600,7 @@ printing-press lock update --cli <api>-pp-cli --phase shipcheck
 printing-press dogfood         --dir "$CLI_WORK_DIR" --spec <same-spec> --research-dir "$API_RUN_DIR"
 printing-press verify          --dir "$CLI_WORK_DIR" --spec <same-spec> --fix
 printing-press workflow-verify --dir "$CLI_WORK_DIR"
+printing-press verify-skill    --dir "$CLI_WORK_DIR"
 printing-press scorecard       --dir "$CLI_WORK_DIR" --spec <same-spec>
 ```
 
@@ -1607,6 +1608,7 @@ Interpretation:
 - `dogfood` catches dead flags, dead helpers, invalid paths, example drift, broken data wiring, command tree/config field wiring bugs, and novel features that were planned but not built
 - `verify` catches runtime breakage and runs the auto-fix loop for common failures
 - `workflow-verify` tests the primary workflow end-to-end using the verification manifest (workflow_verify.yaml). Three verdicts: workflow-pass, workflow-fail, unverified-needs-auth
+- `verify-skill` checks that every `--flag` and command path in SKILL.md actually exists in the shipped CLI source. Catches bogus examples invented by the absorb LLM (e.g., `search --max-time` when `--max-time` is a `tonight` flag). Exit 1 = findings to fix; exit 0 = SKILL is honest.
 - `scorecard` is the structural quality snapshot, not the source of truth by itself
 
 Fix order (update heartbeat between each fix category to prevent stale lock during long fix loops):
@@ -1641,6 +1643,7 @@ Ship threshold:
 - `dogfood` no longer fails because of spec parsing, binary path, or skipped examples
 - `dogfood` wiring checks pass (no unregistered commands, no config field mismatches)
 - `workflow-verify` verdict is `workflow-pass` or `unverified-needs-auth` (not `workflow-fail`)
+- `verify-skill` exits 0 (no mechanical mismatches between SKILL.md and CLI source). Treat non-zero as a fix-before-ship blocker — the SKILL is what agents read; if it lies about the CLI, the lie ships.
 - `scorecard` is at least 65 and **no flagship or approved-in-Phase-1.5 feature returns wrong/empty output**
 
 **Behavioral correctness is part of the ship threshold, not just structural quality.** A Grade A scorecard with a broken flagship feature (e.g., `goat "brownies"` returning a chili recipe) does NOT pass the ship threshold. Run a sample invocation of every novel-feature command before declaring shipcheck complete.
@@ -1670,6 +1673,53 @@ If the final verdict is `hold`, release the lock without promoting to library:
 printing-press lock release --cli <api>-pp-cli
 ```
 The working copy remains in `$CLI_WORK_DIR` for potential future retry. Proceed to Phase 5.6 to archive manuscripts (archiving still happens on hold).
+
+## Phase 4.8: Agentic SKILL Review
+
+**Runs after shipcheck, before Phase 5.** `verify-skill` (Phase 4) is a mechanical check — it catches wrong flags on wrong commands, undeclared flags, and positional-arg count mismatches. It cannot catch **semantic** issues that only a reader notices:
+
+- A trigger phrase promises behavior the CLI doesn't have ("plan dinners for the week" when there's no `meal-plan suggest`, only manual `meal-plan set`)
+- A novel-feature description says the feature does X; the actual command does Y
+- The AuthNarrative mentions `auth login --chrome` when the CLI's auth subcommands are only `set-token`/`logout`/`status`
+- Novel features shipped as stubs aren't labeled as such in the SKILL (contradicts Phase 1.5 stub-marking rule)
+- Recipes/worked examples produce output that doesn't match their prose claims
+- Trigger phrases sound agent-natural or sound like marketing copy
+
+### Dispatch
+
+Use the Agent tool (general-purpose or a dedicated reviewer) with this prompt contract:
+
+> Review the SKILL.md at `$CLI_WORK_DIR/SKILL.md` against the shipped CLI. You have these ground-truth sources:
+>
+> - `<cli> --help` output — enumerate it recursively if needed.
+> - The absorb manifest in `$RESEARCH_DIR/<stamp>-feat-<api>-pp-cli-absorb-manifest.md`.
+> - The `research.json` `novel_features` (planned) and `novel_features_built` (verified) fields.
+> - The README at `$CLI_WORK_DIR/README.md`.
+>
+> For each of these semantic checks, report findings under 50 words each:
+>
+> 1. **Trigger phrases match capabilities.** Does every trigger phrase in the SKILL's description frontmatter correspond to something the CLI can actually do? Flag phrases that imply missing capabilities.
+> 2. **Novel-feature descriptions match commands.** For each feature in the "Unique Capabilities" section, run `<cli> <command> --help` and verify the description matches the actual behavior. Mismatches are findings.
+> 3. **Stub disclosure.** If `novel_features` has items that are absent from `novel_features_built`, they shipped as stubs. The SKILL must label them (see Phase 1.5 stub-marking rule). Unlabeled stubs are findings.
+> 4. **Auth narrative accuracy.** Read the auth section. Does every `auth login/set-token/status` invocation mentioned actually exist on the CLI? Does the narrative match the CLI's auth type (api_key vs cookie vs session_handshake)?
+> 5. **Recipe output claims.** For the worked examples, does the prose claim match what the command actually produces? (Not the exact output — the shape and intent.)
+> 6. **Marketing-copy smell.** Does the SKILL read like ad copy ("comprehensive", "seamless", "powerful") instead of concrete capability descriptions? Those phrases are findings.
+>
+> Return a list of findings. For each: check name, severity (error/warning), line number, one-sentence fix. If SKILL passes all six checks, return "PASS — no findings."
+
+### Gate
+
+- If the reviewer returns PASS, proceed to Phase 5.
+- If the reviewer returns findings of severity `error`, fix them before Phase 5. Same fix-now contract as other shipcheck findings.
+- If the reviewer returns only `warning` findings, surface them to the user and proceed if they approve.
+
+### Why agentic vs template-only
+
+A template-level check would require every possible semantic mismatch to be pattern-matchable against source. Many aren't — "does this trigger phrase correspond to what the CLI does" is an LLM-shaped question. Accept the token cost for the catch.
+
+### Known blind spots
+
+The agent can't verify runtime behavior without running commands; stick to help-text and source-based claims. For runtime-behavior claims (e.g., "returns 5 matching recipes"), Phase 5 dogfood is the right gate.
 
 ## Phase 5: Dogfood Testing
 
