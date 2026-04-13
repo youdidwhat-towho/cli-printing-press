@@ -1,15 +1,38 @@
 package pipeline
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
+)
+
+// LiveStatus is the outcome of one feature's live check.
+type LiveStatus string
+
+const (
+	StatusPass LiveStatus = "pass"
+	StatusFail LiveStatus = "fail"
+	StatusSkip LiveStatus = "skip"
+)
+
+// Default bounds for RunLiveCheck. Exported so callers can override via
+// LiveCheckOptions without hard-coding magic numbers.
+const (
+	DefaultLiveCheckTimeout     = 10 * time.Second
+	DefaultLiveCheckConcurrency = 4
+	// MaxOutputBytes caps the stdout captured from each feature invocation.
+	// Relevance matching only needs a few hundred bytes; a 1 MiB cap keeps a
+	// misbehaving feature from exhausting the scorecard process's memory.
+	MaxOutputBytes = 1 << 20
 )
 
 // LiveCheckResult summarizes a live-behavior sampling of a printed CLI's
@@ -22,38 +45,66 @@ import (
 // correctness cap on the Insight dimension — a Grade A scorecard with a
 // flagship feature returning wrong data shouldn't be possible.
 type LiveCheckResult struct {
-	Checked  int                 `json:"checked"`
 	Passed   int                 `json:"passed"`
 	Failed   int                 `json:"failed"`
 	Skipped  int                 `json:"skipped"`
-	PassRate float64             `json:"pass_rate"` // passed / checked, 0..1
+	PassRate float64             `json:"-"` // exposed via pass_rate_pct in MarshalJSON
 	Features []LiveFeatureResult `json:"features"`
-	Unable   bool                `json:"unable,omitempty"` // true when the check couldn't run (no research.json, no binary)
-	Reason   string              `json:"reason,omitempty"` // why Unable is set
+	Unable   bool                `json:"unable,omitempty"`
+	Reason   string              `json:"reason,omitempty"`
 	RanAt    time.Time           `json:"ran_at"`
+}
+
+// Checked returns the total number of features that were sampled.
+// Derived; not persisted to avoid the three-counters-for-three-states
+// redundancy that makes invariants easy to drift.
+func (r *LiveCheckResult) Checked() int {
+	if r == nil {
+		return 0
+	}
+	return r.Passed + r.Failed + r.Skipped
 }
 
 // LiveFeatureResult is one feature's outcome.
 type LiveFeatureResult struct {
-	Name    string `json:"name"`
-	Command string `json:"command"`
-	Example string `json:"example"`
-	Status  string `json:"status"` // "pass", "fail", "skip"
-	Reason  string `json:"reason,omitempty"`
+	Name    string     `json:"name"`
+	Command string     `json:"command"`
+	Example string     `json:"example"`
+	Status  LiveStatus `json:"status"`
+	Reason  string     `json:"reason,omitempty"`
+}
+
+// LiveCheckOptions bundles the optional knobs for RunLiveCheck. CLIDir is
+// required; every other field has a sensible zero-value default.
+type LiveCheckOptions struct {
+	// CLIDir is the printed CLI's root (containing research.json and the
+	// built binary).
+	CLIDir string
+	// BinaryName, when non-empty, names the executable to run. Leave blank
+	// to let RunLiveCheck derive it from CLIDir (tries `<base>-pp-cli`,
+	// falls back to `<base>`).
+	BinaryName string
+	// Timeout bounds each feature invocation. Zero uses DefaultLiveCheckTimeout.
+	Timeout time.Duration
+	// Concurrency sets the parallel-feature worker count. Zero uses
+	// DefaultLiveCheckConcurrency. Set to 1 to force serial execution.
+	Concurrency int
 }
 
 // RunLiveCheck samples each novel feature's Example command against the real
 // CLI. Returns an Unable=true result (not an error) when research.json or the
 // binary is missing — the scorecard treats those as "could not run" rather
 // than failure, so an absent check doesn't penalize the CLI.
-//
-// cliDir is the printed CLI's root (containing the built binary). binaryName
-// is the executable name (e.g., "recipe-goat-pp-cli"). timeout bounds each
-// command; 10s is usually enough for list/search/get calls.
-func RunLiveCheck(cliDir, binaryName string, timeout time.Duration) *LiveCheckResult {
+func RunLiveCheck(opts LiveCheckOptions) *LiveCheckResult {
 	out := &LiveCheckResult{RanAt: time.Now().UTC()}
 
-	research, err := LoadResearch(cliDir)
+	if opts.CLIDir == "" {
+		out.Unable = true
+		out.Reason = "CLIDir is required"
+		return out
+	}
+
+	research, err := LoadResearch(opts.CLIDir)
 	if err != nil {
 		out.Unable = true
 		out.Reason = "no research.json: " + err.Error()
@@ -67,41 +118,93 @@ func RunLiveCheck(cliDir, binaryName string, timeout time.Duration) *LiveCheckRe
 		return out
 	}
 
-	binaryPath := filepath.Join(cliDir, binaryName)
-	info, statErr := os.Stat(binaryPath)
-	if statErr != nil {
+	binaryPath, binErr := resolveBinaryPath(opts.CLIDir, opts.BinaryName)
+	if binErr != nil {
 		out.Unable = true
-		out.Reason = fmt.Sprintf("binary %q not found: %v", binaryPath, statErr)
-		return out
-	}
-	if info.Mode()&0o111 == 0 {
-		out.Unable = true
-		out.Reason = fmt.Sprintf("binary %q is not executable", binaryPath)
+		out.Reason = binErr.Error()
 		return out
 	}
 
+	timeout := opts.Timeout
 	if timeout <= 0 {
-		timeout = 10 * time.Second
+		timeout = DefaultLiveCheckTimeout
+	}
+	concurrency := opts.Concurrency
+	if concurrency <= 0 {
+		concurrency = DefaultLiveCheckConcurrency
+	}
+	if concurrency > len(features) {
+		concurrency = len(features)
 	}
 
-	for _, f := range features {
-		result := runOneFeatureCheck(cliDir, binaryPath, f, timeout)
-		out.Features = append(out.Features, result)
-		out.Checked++
-		switch result.Status {
-		case "pass":
+	results := runFeaturesConcurrent(opts.CLIDir, binaryPath, features, timeout, concurrency)
+	out.Features = results
+	for _, r := range results {
+		switch r.Status {
+		case StatusPass:
 			out.Passed++
-		case "fail":
+		case StatusFail:
 			out.Failed++
 		default:
 			out.Skipped++
 		}
 	}
-
-	if out.Checked > 0 {
-		out.PassRate = float64(out.Passed) / float64(out.Checked)
+	if total := out.Checked(); total > 0 {
+		out.PassRate = float64(out.Passed) / float64(total)
 	}
 	return out
+}
+
+// resolveBinaryPath returns the absolute path to the CLI binary. When name
+// is non-empty it's used verbatim; otherwise RunLiveCheck tries the common
+// `<base>-pp-cli` naming convention and falls back to `<base>`.
+func resolveBinaryPath(cliDir, name string) (string, error) {
+	candidates := []string{name}
+	if name == "" {
+		base := filepath.Base(cliDir)
+		candidates = []string{base + "-pp-cli", base}
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		path := filepath.Join(cliDir, candidate)
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if info.Mode()&0o111 == 0 {
+			return "", fmt.Errorf("binary %q is not executable", path)
+		}
+		return path, nil
+	}
+	return "", fmt.Errorf("no runnable binary found in %q (tried %v)", cliDir, candidates)
+}
+
+// runFeaturesConcurrent distributes the per-feature checks across a worker
+// pool. Results are collected in-order so LiveCheckResult.Features stays
+// stable across runs.
+func runFeaturesConcurrent(cliDir, binaryPath string, features []NovelFeature, timeout time.Duration, concurrency int) []LiveFeatureResult {
+	results := make([]LiveFeatureResult, len(features))
+	type job struct{ idx int }
+	jobs := make(chan job, len(features))
+	for i := range features {
+		jobs <- job{idx: i}
+	}
+	close(jobs)
+
+	var wg sync.WaitGroup
+	for w := 0; w < concurrency; w++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for j := range jobs {
+				results[j.idx] = runOneFeatureCheck(cliDir, binaryPath, features[j.idx], timeout)
+			}
+		}()
+	}
+	wg.Wait()
+	return results
 }
 
 // pickFeatures returns the novel features to sample. Prefers NovelFeaturesBuilt
@@ -135,10 +238,15 @@ func pickFeatures(r *ResearchResult) []NovelFeature {
 // DeadlineExceeded, so it runs exec inline.
 func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.Duration) LiveFeatureResult {
 	result := LiveFeatureResult{Name: f.Name, Command: f.Command, Example: f.Example}
+	fail := func(reason string) LiveFeatureResult {
+		result.Status = StatusFail
+		result.Reason = reason
+		return result
+	}
 
 	args, err := parseExampleArgs(f.Example)
 	if err != nil {
-		result.Status = "skip"
+		result.Status = StatusSkip
 		result.Reason = "could not parse example: " + err.Error()
 		return result
 	}
@@ -148,44 +256,60 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 
 	cmd := exec.CommandContext(ctx, binaryPath, args...)
 	cmd.Dir = cliDir
-	output, runErr := cmd.Output()
+	// Capture stdout into a bounded buffer. An unbounded `cmd.Output()` call
+	// would let a misbehaving feature exhaust the scorecard's memory.
+	stdoutCap := &bytes.Buffer{}
+	stderrCap := &bytes.Buffer{}
+	cmd.Stdout = &limitedWriter{w: stdoutCap, remaining: MaxOutputBytes}
+	cmd.Stderr = &limitedWriter{w: stderrCap, remaining: MaxOutputBytes}
+	runErr := cmd.Run()
 	if ctx.Err() == context.DeadlineExceeded {
-		result.Status = "fail"
-		result.Reason = fmt.Sprintf("timed out after %s", timeout)
-		return result
+		return fail(fmt.Sprintf("timed out after %s", timeout))
 	}
 
-	// Exit 0 and non-empty output is the minimum bar.
 	if runErr != nil {
 		var exitErr *exec.ExitError
 		if errors.As(runErr, &exitErr) {
-			result.Status = "fail"
-			result.Reason = fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), trimStderr(exitErr.Stderr))
-			return result
+			return fail(fmt.Sprintf("exit %d: %s", exitErr.ExitCode(), trimOutput(stderrCap.String())))
 		}
-		result.Status = "fail"
-		result.Reason = "run error: " + runErr.Error()
-		return result
+		return fail("run error: " + runErr.Error())
 	}
-	if len(strings.TrimSpace(string(output))) == 0 {
-		result.Status = "fail"
-		result.Reason = "empty output"
-		return result
+	if strings.TrimSpace(stdoutCap.String()) == "" {
+		return fail("empty output")
 	}
 
-	// Relevance check: when the Example encodes a query (positional string
-	// argument that isn't a flag), at least one query token should appear in
-	// the output. Filters out cases where a search returns unrelated results.
 	if query := extractQueryToken(args); query != "" {
-		if !outputMentionsQuery(string(output), query) {
-			result.Status = "fail"
-			result.Reason = fmt.Sprintf("output does not contain any token from query %q", query)
-			return result
+		if !outputMentionsQuery(stdoutCap.String(), query) {
+			return fail(fmt.Sprintf("output does not contain any token from query %q", query))
 		}
 	}
 
-	result.Status = "pass"
+	result.Status = StatusPass
 	return result
+}
+
+// limitedWriter caps the bytes forwarded to w at `remaining`; further writes
+// are discarded (but still report as successful, so the subprocess doesn't
+// SIGPIPE). Intentionally tolerant of truncation — the live check only needs
+// enough output to run a relevance match.
+type limitedWriter struct {
+	w         io.Writer
+	remaining int
+}
+
+func (lw *limitedWriter) Write(p []byte) (int, error) {
+	if lw.remaining <= 0 {
+		return len(p), nil
+	}
+	n := len(p)
+	if n > lw.remaining {
+		n = lw.remaining
+	}
+	if _, err := lw.w.Write(p[:n]); err != nil {
+		return 0, err
+	}
+	lw.remaining -= n
+	return len(p), nil
 }
 
 // parseExampleArgs takes an Example like:
@@ -202,12 +326,13 @@ func parseExampleArgs(example string) ([]string, error) {
 	if len(tokens) < 2 {
 		return nil, fmt.Errorf("example has no subcommand: %q", example)
 	}
-	// Drop the binary-name prefix; the live check injects the absolute path.
 	return tokens[1:], nil
 }
 
 // shellSplit handles double-quoted tokens — enough for the Example formats
 // the absorb phase produces. No shell metacharacter interpolation is done.
+// Single quotes, escaped characters, and backslashes are not recognized;
+// Examples using those will need updating.
 func shellSplit(s string) ([]string, error) {
 	var tokens []string
 	var current strings.Builder
@@ -250,8 +375,13 @@ func shellSplit(s string) ([]string, error) {
 //	["sub", "buttermilk"]                 → "buttermilk"
 //	["recipe", "get", "https://foo/bar"]  → "" (URL, skip relevance check)
 //	["cookbook", "list", "--json"]        → "" (no query)
+//
+// TODO: commands like `list pending` where "pending" is a status keyword
+// won't have the status in their rendered output, producing a spurious
+// relevance failure. If this starts biting, consider a denylist of common
+// non-content positionals or reading a dedicated "relevance arg" pointer
+// from NovelFeature metadata.
 func extractQueryToken(args []string) string {
-	// Collect positionals before the first flag.
 	var positionals []string
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
@@ -259,9 +389,6 @@ func extractQueryToken(args []string) string {
 		}
 		positionals = append(positionals, arg)
 	}
-	// Drop the leading subcommand word(s). The last positional is the most
-	// likely candidate for a query: for `goat brownies` it's "brownies"; for
-	// `recipe get URL` it's the URL (then filtered out as not-a-query below).
 	if len(positionals) < 2 {
 		return ""
 	}
@@ -305,7 +432,6 @@ func outputMentionsQuery(output, query string) bool {
 		if strings.Contains(lowered, tok) {
 			return true
 		}
-		// Singular/plural tolerance: "brownies" should match "brownie".
 		if strings.HasSuffix(tok, "s") && len(tok) > 3 {
 			if strings.Contains(lowered, tok[:len(tok)-1]) {
 				return true
@@ -315,8 +441,8 @@ func outputMentionsQuery(output, query string) bool {
 	return false
 }
 
-func trimStderr(b []byte) string {
-	s := strings.TrimSpace(string(b))
+func trimOutput(s string) string {
+	s = strings.TrimSpace(s)
 	if len(s) > 300 {
 		s = s[:300] + "..."
 	}
@@ -327,12 +453,12 @@ func trimStderr(b []byte) string {
 // receive given its live-check pass rate. A CLI whose flagships return
 // broken output shouldn't earn a Grade A scorecard.
 //
-//   - Unable or Checked==0: no cap (nil return)
+//   - Unable or zero checked: no cap (nil return)
 //   - PassRate >= 0.8: no cap
 //   - PassRate >= 0.5: cap at 7
 //   - PassRate <  0.5: cap at 4
 func InsightCapFromLiveCheck(r *LiveCheckResult) *int {
-	if r == nil || r.Unable || r.Checked == 0 {
+	if r == nil || r.Unable || r.Checked() == 0 {
 		return nil
 	}
 	var cap int
@@ -347,21 +473,19 @@ func InsightCapFromLiveCheck(r *LiveCheckResult) *int {
 	return &cap
 }
 
-// MarshalJSON emits a rounded percentage alongside the raw PassRate so
-// consumers can use pass_rate_pct without parsing floating-point noise.
+// MarshalJSON emits a rounded pass_rate_pct alongside the raw counters so
+// JSON consumers don't have to deal with floating-point noise. PassRate is
+// hidden via json:"-" on the struct; this method computes the percentage
+// once using an alias to avoid infinite recursion.
 func (r *LiveCheckResult) MarshalJSON() ([]byte, error) {
 	type alias LiveCheckResult
-	a := (*alias)(r)
-	blob, err := json.Marshal(a)
-	if err != nil {
-		return nil, err
-	}
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal(blob, &m); err != nil {
-		return nil, err
-	}
-	// Replace pass_rate with a truncated form and add pass_rate_pct.
-	delete(m, "pass_rate")
-	m["pass_rate_pct"], _ = json.Marshal(int(r.PassRate*100 + 0.5))
-	return json.Marshal(m)
+	return json.Marshal(&struct {
+		*alias
+		Checked     int `json:"checked"`
+		PassRatePct int `json:"pass_rate_pct"`
+	}{
+		alias:       (*alias)(r),
+		Checked:     r.Checked(),
+		PassRatePct: int(r.PassRate*100 + 0.5),
+	})
 }

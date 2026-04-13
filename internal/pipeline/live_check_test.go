@@ -43,10 +43,10 @@ func writeTestResearchJSON(t *testing.T, cliDir string, features []NovelFeature)
 // the live check.
 func TestLiveCheck_UnableWhenNoResearch(t *testing.T) {
 	dir := t.TempDir()
-	result := RunLiveCheck(dir, "bin", time.Second)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "bin", Timeout: time.Second})
 	require.True(t, result.Unable)
 	require.Contains(t, result.Reason, "research.json")
-	require.Zero(t, result.Checked)
+	require.Zero(t, result.Checked())
 }
 
 // TestLiveCheck_UnableWhenNoExamples verifies the check skips when research
@@ -56,7 +56,7 @@ func TestLiveCheck_UnableWhenNoExamples(t *testing.T) {
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "Feature A", Command: "foo", Description: "no example"},
 	})
-	result := RunLiveCheck(dir, "bin", time.Second)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "bin", Timeout: time.Second})
 	require.True(t, result.Unable)
 	require.Contains(t, result.Reason, "Example")
 }
@@ -68,7 +68,7 @@ func TestLiveCheck_UnableWhenNoBinary(t *testing.T) {
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "A", Command: "a", Example: "bin a --flag"},
 	})
-	result := RunLiveCheck(dir, "missing-binary", time.Second)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "missing-binary", Timeout: time.Second})
 	require.True(t, result.Unable)
 	require.Contains(t, result.Reason, "binary")
 }
@@ -81,9 +81,9 @@ func TestLiveCheck_PassOnHappyPath(t *testing.T) {
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "Best ranker", Command: "goat", Example: `stub goat "brownies" --limit 5`},
 	})
-	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
 	require.False(t, result.Unable, "result was Unable: %s", result.Reason)
-	require.Equal(t, 1, result.Checked)
+	require.Equal(t, 1, result.Checked())
 	require.Equal(t, 1, result.Passed)
 	require.Zero(t, result.Failed)
 	require.Equal(t, 1.0, result.PassRate)
@@ -98,7 +98,7 @@ func TestLiveCheck_FailOnIrrelevantOutput(t *testing.T) {
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "Best ranker", Command: "goat", Example: `stub goat "brownies" --limit 5`},
 	})
-	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
 	require.False(t, result.Unable)
 	require.Equal(t, 1, result.Failed, "expected irrelevant output to fail")
 	require.Equal(t, 0.0, result.PassRate)
@@ -113,7 +113,7 @@ func TestLiveCheck_FailOnExitError(t *testing.T) {
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "Broken", Command: "b", Example: `stub b --flag`},
 	})
-	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
 	require.Equal(t, 1, result.Failed)
 	require.Contains(t, result.Features[0].Reason, "exit 5")
 }
@@ -125,7 +125,7 @@ func TestLiveCheck_FailOnEmptyOutput(t *testing.T) {
 	writeTestResearchJSON(t, dir, []NovelFeature{
 		{Name: "Quiet", Command: "q", Example: `stub q`},
 	})
-	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
 	require.Equal(t, 1, result.Failed)
 	require.Contains(t, result.Features[0].Reason, "empty output")
 }
@@ -148,8 +148,8 @@ func TestLiveCheck_PrefersBuiltFeatures(t *testing.T) {
 	require.NoError(t, err)
 	require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), body, 0o644))
 
-	result := RunLiveCheck(dir, "stub", 5*time.Second)
-	require.Equal(t, 1, result.Checked)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+	require.Equal(t, 1, result.Checked())
 	require.Equal(t, "Built", result.Features[0].Name,
 		"should use novel_features_built when present")
 }
@@ -165,12 +165,12 @@ func TestInsightCap(t *testing.T) {
 	}{
 		{"nil", nil, true, 0},
 		{"unable", &LiveCheckResult{Unable: true}, true, 0},
-		{"zero checked", &LiveCheckResult{Checked: 0}, true, 0},
-		{"100% pass", &LiveCheckResult{Checked: 5, Passed: 5, PassRate: 1.0}, true, 0},
-		{"80% pass", &LiveCheckResult{Checked: 10, Passed: 8, PassRate: 0.8}, true, 0},
-		{"50% pass", &LiveCheckResult{Checked: 10, Passed: 5, PassRate: 0.5}, false, 7},
-		{"30% pass", &LiveCheckResult{Checked: 10, Passed: 3, PassRate: 0.3}, false, 4},
-		{"0% pass", &LiveCheckResult{Checked: 5, Passed: 0, PassRate: 0.0}, false, 4},
+		{"zero checked", &LiveCheckResult{}, true, 0},
+		{"100% pass", &LiveCheckResult{Passed: 5, PassRate: 1.0}, true, 0},
+		{"80% pass", &LiveCheckResult{Passed: 8, Failed: 2, PassRate: 0.8}, true, 0},
+		{"50% pass", &LiveCheckResult{Passed: 5, Failed: 5, PassRate: 0.5}, false, 7},
+		{"30% pass", &LiveCheckResult{Passed: 3, Failed: 7, PassRate: 0.3}, false, 4},
+		{"0% pass", &LiveCheckResult{Failed: 5, PassRate: 0.0}, false, 4},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -240,7 +240,7 @@ func TestOutputMentionsQuery(t *testing.T) {
 
 // TestLiveCheckMarshalJSON verifies the custom marshaller emits pass_rate_pct.
 func TestLiveCheckMarshalJSON(t *testing.T) {
-	r := &LiveCheckResult{Checked: 3, Passed: 2, PassRate: 2.0 / 3.0}
+	r := &LiveCheckResult{Passed: 2, PassRate: 2.0 / 3.0}
 	body, err := json.Marshal(r)
 	require.NoError(t, err)
 	require.Contains(t, string(body), `"pass_rate_pct":67`)
@@ -262,12 +262,94 @@ esac
 		{Name: "Ranker", Command: "goat", Example: `stub goat "brownies" --limit 5`},
 		{Name: "Subs", Command: "sub", Example: `stub sub buttermilk`},
 	})
-	result := RunLiveCheck(dir, "stub", 5*time.Second)
-	require.Equal(t, 2, result.Checked)
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second})
+	require.Equal(t, 2, result.Checked())
 	require.Equal(t, 2, result.Passed)
 	require.Equal(t, 1.0, result.PassRate)
 	// Ensure pass_rate_pct marshals cleanly.
 	body, err := json.Marshal(result)
 	require.NoError(t, err)
 	require.True(t, strings.Contains(string(body), `"pass_rate_pct":100`))
+}
+
+// TestLiveCheck_ConcurrentExecutionPreservesOrder ensures the worker pool
+// produces Features in the input order (not the order workers finish). A
+// slow-first feature would otherwise land at the end of the results slice.
+func TestLiveCheck_ConcurrentExecutionPreservesOrder(t *testing.T) {
+	dir := t.TempDir()
+	// Each invocation sleeps inversely proportional to the argument so the
+	// first feature is the slowest — if ordering leaked through the pool,
+	// results would come back reversed.
+	writeStubBinary(t, dir, "stub", `
+case "$2" in
+  aaaa) sleep 0.15; echo "AAAA matched aaaa";;
+  bbbb) sleep 0.05; echo "BBBB matched bbbb";;
+  cccc) sleep 0.01; echo "CCCC matched cccc";;
+esac
+`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "First", Command: "c", Example: `stub c aaaa`},
+		{Name: "Second", Command: "c", Example: `stub c bbbb`},
+		{Name: "Third", Command: "c", Example: `stub c cccc`},
+	})
+	result := RunLiveCheck(LiveCheckOptions{
+		CLIDir: dir, BinaryName: "stub", Timeout: 5 * time.Second, Concurrency: 3,
+	})
+	require.Equal(t, 3, result.Checked())
+	require.Equal(t, "First", result.Features[0].Name)
+	require.Equal(t, "Second", result.Features[1].Name)
+	require.Equal(t, "Third", result.Features[2].Name)
+}
+
+// TestLiveCheck_OutputCap guards against OOM from a runaway feature that
+// streams megabytes of output. The cap is MaxOutputBytes (1 MiB); the test
+// writes 2 MiB so the limitedWriter has to truncate without blowing up the
+// process. The Example has only one positional so no relevance check fires
+// against the (mostly 'x') output.
+func TestLiveCheck_OutputCap(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `head -c 2097152 /dev/zero | tr '\0' 'x'`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Noisy", Command: "n", Example: `stub n`},
+	})
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, BinaryName: "stub", Timeout: 10 * time.Second})
+	require.Equal(t, 1, result.Passed, "run should complete despite bounded output")
+}
+
+// TestLiveCheck_BinaryAutoDerivation verifies RunLiveCheck finds the binary
+// when BinaryName is empty by trying <base>-pp-cli then <base>.
+func TestLiveCheck_BinaryAutoDerivation(t *testing.T) {
+	dir := t.TempDir()
+	// CLIDir basename is the last path segment. Build a stub named that way
+	// and a stub named `<name>-pp-cli`; the latter should be preferred.
+	base := filepath.Base(dir)
+	writeStubBinary(t, dir, base+"-pp-cli", `echo "matched via -pp-cli"`)
+	writeStubBinary(t, dir, base, `echo "matched via base"`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "X", Command: "x", Example: `stub x matched`},
+	})
+	result := RunLiveCheck(LiveCheckOptions{CLIDir: dir, Timeout: 5 * time.Second})
+	require.False(t, result.Unable, "should have found a binary: %s", result.Reason)
+	require.Equal(t, 1, result.Passed)
+	require.Contains(t, result.Features[0].Example, "stub x matched")
+}
+
+// TestChecked_DerivedFromCounters ensures the Checked() method is a pure
+// derivation — if it ever drifts from Passed+Failed+Skipped the live-check
+// invariant is broken.
+func TestChecked_DerivedFromCounters(t *testing.T) {
+	cases := []struct {
+		r    LiveCheckResult
+		want int
+	}{
+		{LiveCheckResult{}, 0},
+		{LiveCheckResult{Passed: 3}, 3},
+		{LiveCheckResult{Passed: 1, Failed: 2, Skipped: 3}, 6},
+	}
+	for _, tc := range cases {
+		require.Equal(t, tc.want, tc.r.Checked())
+	}
+	// Also: nil receiver must not panic.
+	var nilRes *LiveCheckResult
+	require.Zero(t, nilRes.Checked())
 }

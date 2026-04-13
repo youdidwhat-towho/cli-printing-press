@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -49,14 +48,10 @@ func newScorecardCmd() *cobra.Command {
 
 			var live *pipeline.LiveCheckResult
 			if liveCheck {
-				binaryName := filepath.Base(dir) + "-pp-cli"
-				// Dir naming is not perfectly consistent — the generator may
-				// write to both `<slug>` and `<slug>-pp-cli`. Fall back to
-				// the simpler name if the guessed binary isn't present.
-				if _, statErr := os.Stat(filepath.Join(dir, binaryName)); statErr != nil {
-					binaryName = filepath.Base(dir)
-				}
-				live = pipeline.RunLiveCheck(dir, binaryName, liveCheckTimeout)
+				live = pipeline.RunLiveCheck(pipeline.LiveCheckOptions{
+					CLIDir:  dir,
+					Timeout: liveCheckTimeout,
+				})
 				if insightCap := pipeline.InsightCapFromLiveCheck(live); insightCap != nil && sc.Steinberger.Insight > *insightCap {
 					sc.Steinberger.Insight = *insightCap
 				}
@@ -111,7 +106,7 @@ func newScorecardCmd() *cobra.Command {
 				if live.Unable {
 					fmt.Printf("  Unable to run: %s\n", live.Reason)
 				} else {
-					fmt.Printf("  Passed: %d/%d  (%d%% pass rate)\n", live.Passed, live.Checked, int(live.PassRate*100+0.5))
+					fmt.Printf("  Passed: %d/%d  (%d%% pass rate)\n", live.Passed, live.Checked(), int(live.PassRate*100+0.5))
 					if live.Failed > 0 {
 						fmt.Println("  Failures:")
 						for _, f := range live.Features {
