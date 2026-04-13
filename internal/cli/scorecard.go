@@ -4,7 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/mvanhorn/cli-printing-press/internal/pipeline"
 	"github.com/spf13/cobra"
@@ -14,12 +16,17 @@ func newScorecardCmd() *cobra.Command {
 	var dir string
 	var specPath string
 	var asJSON bool
+	var liveCheck bool
+	var liveCheckTimeout time.Duration
 
 	cmd := &cobra.Command{
 		Use:   "scorecard",
 		Short: "Score a generated CLI against the Steinberger bar",
 		Example: `  # Score a generated CLI directory
   printing-press scorecard --dir ./generated/stripe-pp-cli
+
+  # Include a live behavioral sample (runs novel-feature examples against real targets)
+  printing-press scorecard --dir ./generated/stripe-pp-cli --live-check
 
   # Output as JSON
   printing-press scorecard --dir ./generated/stripe-pp-cli --json`,
@@ -40,10 +47,29 @@ func newScorecardCmd() *cobra.Command {
 				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("running scorecard: %w", err)}
 			}
 
+			var live *pipeline.LiveCheckResult
+			if liveCheck {
+				binaryName := filepath.Base(dir) + "-pp-cli"
+				// Dir naming is not perfectly consistent — the generator may
+				// write to both `<slug>` and `<slug>-pp-cli`. Fall back to
+				// the simpler name if the guessed binary isn't present.
+				if _, statErr := os.Stat(filepath.Join(dir, binaryName)); statErr != nil {
+					binaryName = filepath.Base(dir)
+				}
+				live = pipeline.RunLiveCheck(dir, binaryName, liveCheckTimeout)
+				if insightCap := pipeline.InsightCapFromLiveCheck(live); insightCap != nil && sc.Steinberger.Insight > *insightCap {
+					sc.Steinberger.Insight = *insightCap
+				}
+			}
+
 			if asJSON {
+				payload := map[string]any{"scorecard": sc}
+				if live != nil {
+					payload["live_check"] = live
+				}
 				enc := json.NewEncoder(os.Stdout)
 				enc.SetIndent("", "  ")
-				return enc.Encode(sc)
+				return enc.Encode(payload)
 			}
 
 			// Human-readable output
@@ -80,6 +106,23 @@ func newScorecardCmd() *cobra.Command {
 				fmt.Printf("  Note: omitted from denominator: %s\n", strings.Join(sc.UnscoredDimensions, ", "))
 			}
 
+			if live != nil {
+				fmt.Printf("\nLive Check (behavioral sample)\n")
+				if live.Unable {
+					fmt.Printf("  Unable to run: %s\n", live.Reason)
+				} else {
+					fmt.Printf("  Passed: %d/%d  (%d%% pass rate)\n", live.Passed, live.Checked, int(live.PassRate*100+0.5))
+					if live.Failed > 0 {
+						fmt.Println("  Failures:")
+						for _, f := range live.Features {
+							if f.Status == "fail" {
+								fmt.Printf("    - %s: %s\n", f.Name, f.Reason)
+							}
+						}
+					}
+				}
+			}
+
 			if len(sc.GapReport) > 0 {
 				fmt.Printf("\nGaps:\n")
 				for _, g := range sc.GapReport {
@@ -94,6 +137,8 @@ func newScorecardCmd() *cobra.Command {
 	cmd.Flags().StringVar(&dir, "dir", "", "Path to generated CLI directory")
 	cmd.Flags().StringVar(&specPath, "spec", "", "Path to OpenAPI spec JSON for semantic validation")
 	cmd.Flags().BoolVar(&asJSON, "json", false, "Output as JSON")
+	cmd.Flags().BoolVar(&liveCheck, "live-check", false, "Sample novel-feature examples against real targets and cap Insight when flagships return broken output")
+	cmd.Flags().DurationVar(&liveCheckTimeout, "live-check-timeout", 10*time.Second, "Per-feature timeout for live check invocations")
 
 	return cmd
 }

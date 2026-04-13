@@ -1,0 +1,273 @@
+package pipeline
+
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"runtime"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/stretchr/testify/require"
+)
+
+// writeStubBinary drops a tiny shell script at cliDir/<name> that echoes a
+// response based on its arguments. Used to simulate the CLI under test.
+// Skips the test on Windows since we shell out via sh -c.
+func writeStubBinary(t *testing.T, cliDir, name, script string) string {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script stub not supported on Windows")
+	}
+	path := filepath.Join(cliDir, name)
+	require.NoError(t, os.WriteFile(path, []byte("#!/bin/sh\n"+script+"\n"), 0o755))
+	return path
+}
+
+// writeTestResearchJSON writes a minimal research.json with the given features.
+func writeTestResearchJSON(t *testing.T, cliDir string, features []NovelFeature) {
+	t.Helper()
+	data := map[string]any{
+		"api_name":       "live-check-test",
+		"novel_features": features,
+	}
+	body, err := json.Marshal(data)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(cliDir, "research.json"), body, 0o644))
+}
+
+// TestLiveCheck_UnableWhenNoResearch verifies the check gracefully reports
+// Unable=true when research.json is missing rather than treating the absent
+// data as failure. A CLI without research.json should not be penalized by
+// the live check.
+func TestLiveCheck_UnableWhenNoResearch(t *testing.T) {
+	dir := t.TempDir()
+	result := RunLiveCheck(dir, "bin", time.Second)
+	require.True(t, result.Unable)
+	require.Contains(t, result.Reason, "research.json")
+	require.Zero(t, result.Checked)
+}
+
+// TestLiveCheck_UnableWhenNoExamples verifies the check skips when research
+// exists but no novel feature has an Example command.
+func TestLiveCheck_UnableWhenNoExamples(t *testing.T) {
+	dir := t.TempDir()
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Feature A", Command: "foo", Description: "no example"},
+	})
+	result := RunLiveCheck(dir, "bin", time.Second)
+	require.True(t, result.Unable)
+	require.Contains(t, result.Reason, "Example")
+}
+
+// TestLiveCheck_UnableWhenNoBinary verifies the check reports Unable when the
+// binary doesn't exist — distinguishing "CLI wasn't built" from "CLI flunked".
+func TestLiveCheck_UnableWhenNoBinary(t *testing.T) {
+	dir := t.TempDir()
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "A", Command: "a", Example: "bin a --flag"},
+	})
+	result := RunLiveCheck(dir, "missing-binary", time.Second)
+	require.True(t, result.Unable)
+	require.Contains(t, result.Reason, "binary")
+}
+
+// TestLiveCheck_PassOnHappyPath verifies a feature that exits 0 with output
+// matching the query word passes.
+func TestLiveCheck_PassOnHappyPath(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `echo "Found 3 brownie recipes matching your query"`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Best ranker", Command: "goat", Example: `stub goat "brownies" --limit 5`},
+	})
+	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	require.False(t, result.Unable, "result was Unable: %s", result.Reason)
+	require.Equal(t, 1, result.Checked)
+	require.Equal(t, 1, result.Passed)
+	require.Zero(t, result.Failed)
+	require.Equal(t, 1.0, result.PassRate)
+}
+
+// TestLiveCheck_FailOnIrrelevantOutput verifies the relevance check catches
+// the Recipe GOAT pattern: command runs successfully but returns results that
+// don't match the query (e.g., "brownies" → Texas Chili).
+func TestLiveCheck_FailOnIrrelevantOutput(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `echo "Found 5 Texas Chili recipes ranked by rating"`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Best ranker", Command: "goat", Example: `stub goat "brownies" --limit 5`},
+	})
+	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	require.False(t, result.Unable)
+	require.Equal(t, 1, result.Failed, "expected irrelevant output to fail")
+	require.Equal(t, 0.0, result.PassRate)
+	require.Contains(t, result.Features[0].Reason, "query")
+}
+
+// TestLiveCheck_FailOnExitError verifies a command that exits non-zero is
+// recorded as fail, not skip.
+func TestLiveCheck_FailOnExitError(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `echo "something went wrong" >&2; exit 5`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Broken", Command: "b", Example: `stub b --flag`},
+	})
+	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	require.Equal(t, 1, result.Failed)
+	require.Contains(t, result.Features[0].Reason, "exit 5")
+}
+
+// TestLiveCheck_FailOnEmptyOutput ensures stdout must be non-empty.
+func TestLiveCheck_FailOnEmptyOutput(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `exit 0`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Quiet", Command: "q", Example: `stub q`},
+	})
+	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	require.Equal(t, 1, result.Failed)
+	require.Contains(t, result.Features[0].Reason, "empty output")
+}
+
+// TestLiveCheck_PrefersBuiltFeatures verifies the check samples the verified
+// `novel_features_built` list (dogfood-validated) over the aspirational
+// `novel_features` list when both are present.
+func TestLiveCheck_PrefersBuiltFeatures(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `echo "matched built-feature output"`)
+	built := []NovelFeature{
+		{Name: "Built", Command: "b", Example: `stub b "built-feature" --flag`},
+	}
+	data := map[string]any{
+		"api_name":             "live-check-test",
+		"novel_features":       []NovelFeature{{Name: "Planned", Example: `stub p "planned" --flag`}},
+		"novel_features_built": built,
+	}
+	body, err := json.Marshal(data)
+	require.NoError(t, err)
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "research.json"), body, 0o644))
+
+	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	require.Equal(t, 1, result.Checked)
+	require.Equal(t, "Built", result.Features[0].Name,
+		"should use novel_features_built when present")
+}
+
+// TestInsightCap verifies the pass-rate → cap mapping, which is the scorecard
+// integration contract.
+func TestInsightCap(t *testing.T) {
+	cases := []struct {
+		name    string
+		input   *LiveCheckResult
+		wantNil bool
+		wantCap int
+	}{
+		{"nil", nil, true, 0},
+		{"unable", &LiveCheckResult{Unable: true}, true, 0},
+		{"zero checked", &LiveCheckResult{Checked: 0}, true, 0},
+		{"100% pass", &LiveCheckResult{Checked: 5, Passed: 5, PassRate: 1.0}, true, 0},
+		{"80% pass", &LiveCheckResult{Checked: 10, Passed: 8, PassRate: 0.8}, true, 0},
+		{"50% pass", &LiveCheckResult{Checked: 10, Passed: 5, PassRate: 0.5}, false, 7},
+		{"30% pass", &LiveCheckResult{Checked: 10, Passed: 3, PassRate: 0.3}, false, 4},
+		{"0% pass", &LiveCheckResult{Checked: 5, Passed: 0, PassRate: 0.0}, false, 4},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := InsightCapFromLiveCheck(tc.input)
+			if tc.wantNil {
+				require.Nil(t, got)
+			} else {
+				require.NotNil(t, got)
+				require.Equal(t, tc.wantCap, *got)
+			}
+		})
+	}
+}
+
+// TestShellSplit covers the quoted-query parsing used for Example commands.
+func TestShellSplit(t *testing.T) {
+	cases := []struct {
+		in   string
+		want []string
+	}{
+		{`cli goat brownies`, []string{"cli", "goat", "brownies"}},
+		{`cli goat "chicken tikka masala" --limit 5`, []string{"cli", "goat", "chicken tikka masala", "--limit", "5"}},
+		{`cli  multiple   spaces`, []string{"cli", "multiple", "spaces"}},
+	}
+	for _, tc := range cases {
+		got, err := shellSplit(tc.in)
+		require.NoError(t, err)
+		require.Equal(t, tc.want, got, "input=%q", tc.in)
+	}
+	_, err := shellSplit(`cli "unclosed`)
+	require.Error(t, err)
+}
+
+// TestExtractQueryToken covers the query detection used for relevance checks.
+// The extractor is deliberately simple: it returns the last positional
+// argument before the first flag, after excluding URLs and numeric IDs
+// (which won't appear as text in the CLI output). For multi-word command
+// paths like `cookbook list`, the extractor will return the 2nd word and
+// the downstream relevance check will usually succeed vacuously — that's
+// an acceptable cost for a stateless heuristic.
+func TestExtractQueryToken(t *testing.T) {
+	cases := []struct {
+		args []string
+		want string
+	}{
+		{[]string{"goat", "brownies", "--limit", "5"}, "brownies"},
+		{[]string{"sub", "buttermilk"}, "buttermilk"},
+		{[]string{"recipe", "get", "https://example.com/recipe"}, ""},
+		{[]string{"recipe", "open", "42"}, ""},
+		{[]string{"tonight", "--max-time", "30m"}, ""},
+		{[]string{"cookbook"}, ""},
+	}
+	for _, tc := range cases {
+		got := extractQueryToken(tc.args)
+		require.Equal(t, tc.want, got, "args=%v", tc.args)
+	}
+}
+
+// TestOutputMentionsQuery ensures case-insensitive per-token matching.
+func TestOutputMentionsQuery(t *testing.T) {
+	require.True(t, outputMentionsQuery("Found 5 Brownie Recipes", "brownies"))
+	require.True(t, outputMentionsQuery("chicken tikka masala results", "chicken"))
+	require.False(t, outputMentionsQuery("Texas Chili Recipes", "brownies"))
+	// Tokens under 3 chars are ignored (too generic).
+	require.False(t, outputMentionsQuery("irrelevant", "to"))
+}
+
+// TestLiveCheckMarshalJSON verifies the custom marshaller emits pass_rate_pct.
+func TestLiveCheckMarshalJSON(t *testing.T) {
+	r := &LiveCheckResult{Checked: 3, Passed: 2, PassRate: 2.0 / 3.0}
+	body, err := json.Marshal(r)
+	require.NoError(t, err)
+	require.Contains(t, string(body), `"pass_rate_pct":67`)
+	require.NotContains(t, string(body), "0.6666")
+}
+
+// smoke test that ties research, a stub binary, and the full RunLiveCheck
+// path together.
+func TestLiveCheck_SmokeTest(t *testing.T) {
+	dir := t.TempDir()
+	writeStubBinary(t, dir, "stub", `
+case "$1" in
+  goat) echo "Best brownie recipes: 1. Classic Brownies 2. Fudgy Brownies";;
+  sub)  echo "Substitutions for buttermilk: milk + lemon juice";;
+  *)    echo "unknown command $1" >&2; exit 2;;
+esac
+`)
+	writeTestResearchJSON(t, dir, []NovelFeature{
+		{Name: "Ranker", Command: "goat", Example: `stub goat "brownies" --limit 5`},
+		{Name: "Subs", Command: "sub", Example: `stub sub buttermilk`},
+	})
+	result := RunLiveCheck(dir, "stub", 5*time.Second)
+	require.Equal(t, 2, result.Checked)
+	require.Equal(t, 2, result.Passed)
+	require.Equal(t, 1.0, result.PassRate)
+	// Ensure pass_rate_pct marshals cleanly.
+	body, err := json.Marshal(result)
+	require.NoError(t, err)
+	require.True(t, strings.Contains(string(body), `"pass_rate_pct":100`))
+}
