@@ -184,15 +184,22 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 		return NovelFeaturesCheckResult{Skipped: true}
 	}
 
-	// Build set of registered command Use: names from the CLI source.
-	registeredCmds := collectRegisteredCommands(cliDir)
+	// Build set of registered full command PATHS from the CLI source.
+	// Paths are space-separated (e.g. "portfolio perf", "auth login-chrome")
+	// so the matcher can distinguish sibling commands that share a leaf
+	// name and correctly require hyphen-prefix matches to live under the
+	// same parent. Fall back to a flat leaf set when tree construction
+	// produces nothing (edge cases, unusual CLI layouts).
+	registeredPaths := collectRegisteredCommandPaths(cliDir)
+	registeredLeaves := collectRegisteredCommands(cliDir)
 
 	result := NovelFeaturesCheckResult{
 		Planned: len(research.NovelFeatures),
 	}
 	built := make([]NovelFeature, 0)
 	for _, nf := range research.NovelFeatures {
-		if matchNovelFeature(nf, registeredCmds) {
+		matched, _ := matchNovelFeature(nf, registeredPaths, registeredLeaves)
+		if matched {
 			result.Found++
 			built = append(built, nf)
 		} else {
@@ -209,90 +216,159 @@ func checkNovelFeatures(cliDir, researchDir string) NovelFeaturesCheckResult {
 	return result
 }
 
-// matchNovelFeature runs the three-pass matcher — exact, prefix, alias —
-// against the set of registered command Use: names. Returns true if the
-// planned feature has a plausible corresponding built command.
+// matchNovelFeature runs a path-aware matcher with a leaf-only fallback.
+// Returns (matched, reason) where reason explains the match (or the
+// failure mode) — useful for logging and diagnostic output.
 //
-// Why this is three passes:
-//   - Exact: planned command leaf equals a registered Use: name. The happy
-//     path (e.g. planned "portfolio perf", built "perf" subcommand).
-//   - Prefix: during implementation, planners frequently hyphenate or
-//     specialize the command. Planned "auth login --chrome" becomes built
-//     "login-chrome"; planned "options --moneyness" becomes built
-//     "options-chain". Either direction of prefix relationship counts.
-//   - Alias: escape hatch for cases the matcher can't infer — planner records
-//     alternate names in research.json's `aliases: []`.
+// Strategy, in order:
 //
-// The matcher strips flag tokens (anything starting with "-") from the planned
-// command before extracting the leaf, because flags aren't command names.
-// "options --moneyness otm --max-dte 45" reduces to leaf "options".
-func matchNovelFeature(nf NovelFeature, registered map[string]bool) bool {
-	leaf := strings.ToLower(commandLeaf(nf.Command))
-	if leaf == "" {
-		return false
+//  1. Exact full-path match. Planned "portfolio perf" matches registered
+//     "portfolio perf". Planned "auth login-chrome" matches registered
+//     "auth login-chrome".
+//  2. Hyphen-prefix match on the LAST path segment, ONLY when the parent
+//     path agrees. Planned "auth login --chrome" (path "auth login")
+//     matches registered "auth login-chrome" because both are under
+//     parent "auth" and the leaves are hyphen-related. Planned "options"
+//     would NOT match a sibling "portfolio-options" because the parents
+//     differ. This is the critical accuracy fix over the old leaf-only
+//     matcher, which could match any "perf" anywhere in the tree.
+//  3. Aliases declared in research.json, matched with the same rules.
+//  4. Leaf-only fallback: when the registered-paths set is empty or
+//     doesn't find a path-aware match, fall back to the legacy leaf
+//     matcher against registeredLeaves. This preserves the old behavior
+//     on CLIs where path construction fails (unusual layouts) and
+//     on test fixtures that don't parse AddCommand wiring.
+//
+// Flags are always stripped from the planned command before path
+// extraction — "options --moneyness otm" reduces to path "options",
+// "auth login --chrome" reduces to "auth login". Flag values that
+// happen to be bare words (like "otm") are discarded because they
+// follow a flag token.
+func matchNovelFeature(nf NovelFeature, registeredPaths, registeredLeaves map[string]bool) (bool, string) {
+	plannedPath := commandPath(nf.Command)
+	if plannedPath == "" {
+		return false, "planned command produced no path"
 	}
 
-	// Pass 1: exact
-	if registered[leaf] {
-		return true
+	// Strategy 1 + 2: path-aware matching against the full tree.
+	if matched, reason := matchPath(plannedPath, registeredPaths); matched {
+		return true, reason
 	}
 
-	// Pass 2: prefix — either direction. Built command may be a hyphenated
-	// specialization (planned "options" → built "options-chain") or the planner
-	// may have been more specific than the actual binding (planned "earnings-
-	// calendar" is substring-matched by built "earnings"). Only hyphen
-	// boundaries count as prefix to avoid substring false positives like
-	// "options" matching "op".
-	for use := range registered {
-		if strings.HasPrefix(use, leaf+"-") || strings.HasPrefix(leaf, use+"-") {
-			return true
-		}
-	}
-
-	// Pass 3: aliases declared in research.json. Each alias is matched with
-	// the same exact + prefix rules so planners don't need to list every
-	// hyphen variant.
+	// Strategy 3: aliases with path-aware matching.
 	for _, alias := range nf.Aliases {
-		aliasLeaf := strings.ToLower(commandLeaf(alias))
-		if aliasLeaf == "" {
+		aliasPath := commandPath(alias)
+		if aliasPath == "" {
 			continue
 		}
-		if registered[aliasLeaf] {
-			return true
+		if matched, reason := matchPath(aliasPath, registeredPaths); matched {
+			return true, reason + " (via alias " + alias + ")"
 		}
-		for use := range registered {
-			if strings.HasPrefix(use, aliasLeaf+"-") || strings.HasPrefix(aliasLeaf, use+"-") {
-				return true
+	}
+
+	// Strategy 4: leaf-only fallback for CLIs where path construction
+	// produced nothing (empty registeredPaths) OR the path-aware match
+	// failed but a leaf match would still signal presence. Preserves
+	// backward compatibility with the old matcher's behavior on simple
+	// layouts and test fixtures.
+	if len(registeredPaths) == 0 && len(registeredLeaves) > 0 {
+		leaf := lastPathSegment(plannedPath)
+		if leaf != "" && registeredLeaves[leaf] {
+			return true, "leaf-only fallback: " + leaf
+		}
+		for use := range registeredLeaves {
+			if strings.HasPrefix(use, leaf+"-") || strings.HasPrefix(leaf, use+"-") {
+				return true, "leaf-only fallback with hyphen-prefix: " + leaf + " <-> " + use
+			}
+		}
+		for _, alias := range nf.Aliases {
+			aLeaf := lastPathSegment(commandPath(alias))
+			if aLeaf == "" {
+				continue
+			}
+			if registeredLeaves[aLeaf] {
+				return true, "leaf-only fallback via alias: " + aLeaf
+			}
+			for use := range registeredLeaves {
+				if strings.HasPrefix(use, aLeaf+"-") || strings.HasPrefix(aLeaf, use+"-") {
+					return true, "leaf-only fallback with hyphen-prefix via alias: " + aLeaf + " <-> " + use
+				}
 			}
 		}
 	}
 
-	return false
+	return false, "no registered command matches planned path \"" + plannedPath + "\""
 }
 
-// commandLeaf strips flag tokens (anything beginning with "-") from a command
-// string and returns the last remaining token. "auth login --chrome" → "login";
-// "options --moneyness otm" → "options" (subsequent tokens are flag values).
+// matchPath tries exact and sibling-hyphen-prefix matches for a single
+// planned path against the registered-paths set.
+func matchPath(planned string, registered map[string]bool) (bool, string) {
+	if registered[planned] {
+		return true, "exact: " + planned
+	}
+	parent, leaf := splitCommandPath(planned)
+	for path := range registered {
+		rp, rl := splitCommandPath(path)
+		if rp != parent {
+			continue
+		}
+		if leaf == "" || rl == "" {
+			continue
+		}
+		if strings.HasPrefix(rl, leaf+"-") || strings.HasPrefix(leaf, rl+"-") {
+			return true, "hyphen-prefix: " + planned + " <-> " + path
+		}
+	}
+	return false, ""
+}
+
+// commandPath strips flag tokens and joins the remaining non-flag tokens
+// into a space-separated path. "auth login --chrome" → "auth login";
+// "options --moneyness otm" → "options" (the "otm" bare word comes
+// after a flag, so it's a flag value, not a command token).
 //
-// The rule "stop at first flag" mirrors how users describe commands in plans —
-// the command itself appears before any flag annotation.
-func commandLeaf(cmd string) string {
-	tokens := strings.Fields(cmd)
-	base := make([]string, 0, len(tokens))
+// The rule "stop at first flag" mirrors how planners describe commands —
+// the command path appears before any flag annotation.
+func commandPath(cmd string) string {
+	tokens := strings.Fields(strings.ToLower(cmd))
+	path := make([]string, 0, len(tokens))
 	for _, t := range tokens {
 		if strings.HasPrefix(t, "-") {
 			break
 		}
-		base = append(base, t)
+		path = append(path, t)
 	}
-	if len(base) == 0 {
-		return ""
+	return strings.Join(path, " ")
+}
+
+// splitCommandPath separates a command path into its parent and leaf segments.
+// "portfolio perf" → ("portfolio", "perf"). "digest" → ("", "digest").
+func splitCommandPath(path string) (parent, leaf string) {
+	i := strings.LastIndex(path, " ")
+	if i < 0 {
+		return "", path
 	}
-	return base[len(base)-1]
+	return path[:i], path[i+1:]
+}
+
+// lastPathSegment returns the final space-separated segment of a path,
+// used by the leaf-only fallback matcher. Empty string for empty input.
+func lastPathSegment(path string) string {
+	_, leaf := splitCommandPath(path)
+	return leaf
+}
+
+// commandLeaf is preserved for backward compatibility with any external
+// callers. It returns the last non-flag token of a command string, the
+// same behavior the old matcher relied on. New code should use
+// commandPath (for the full path) or lastPathSegment (for just the leaf).
+func commandLeaf(cmd string) string {
+	return lastPathSegment(commandPath(cmd))
 }
 
 // collectRegisteredCommands returns a set of cobra Use: names found in the
-// CLI's internal/cli/*.go files.
+// CLI's internal/cli/*.go files. This is the flat, leaf-only view used as
+// a fallback when full-path construction isn't possible.
 func collectRegisteredCommands(dir string) map[string]bool {
 	cliDir := filepath.Join(dir, "internal", "cli")
 	files := listGoFiles(cliDir)
@@ -311,6 +387,139 @@ func collectRegisteredCommands(dir string) map[string]bool {
 		}
 	}
 	return cmds
+}
+
+// collectRegisteredCommandPaths walks the CLI's command tree and returns a
+// set of full space-separated command paths (e.g. "portfolio perf",
+// "auth login-chrome"). Used by the path-aware novel-feature matcher.
+//
+// The walker is regex-based (not a full Go AST parser) for consistency
+// with the rest of dogfood's static analysis. It:
+//
+//  1. Finds every function that returns *cobra.Command, captures its Use
+//     field, and records each AddCommand(newXxxCmd(...)) call inside the
+//     function body as a child edge.
+//  2. Finds the root command — the func that registers subcommands onto
+//     rootCmd (conventionally `newRootCmd`, `Execute`, or any func calling
+//     rootCmd.AddCommand).
+//  3. BFS from the root, emitting a path for every node visited.
+//
+// Returns an empty map if the CLI source is unparseable or the root
+// isn't identifiable; callers fall back to leaf-only matching.
+func collectRegisteredCommandPaths(dir string) map[string]bool {
+	cliDir := filepath.Join(dir, "internal", "cli")
+	files := listGoFiles(cliDir)
+
+	// Per-function: Use field + list of child constructor names.
+	type cmdFunc struct {
+		use      string
+		children []string
+	}
+	funcs := map[string]*cmdFunc{}
+	// Funcs that appear as children of rootCmd.AddCommand — the roots
+	// of the command tree.
+	var rootFuncs []string
+	// Detect constructors that appear as `rootCmd.AddCommand(newXxxCmd(...))`
+	// or `rootCmd.AddCommand(newXxxCmd)`. Capture the constructor name.
+	rootAddRe := regexp.MustCompile(`rootCmd\.AddCommand\(\s*(new\w+Cmd)\b`)
+
+	// Per-function body extractor. Match `func newXxxCmd(...)` and capture
+	// the body up to the matching closing brace (heuristic: use balanced
+	// brace counting).
+	funcHeaderRe := regexp.MustCompile(`func\s+(new\w+Cmd)\s*\(`)
+	useRe := regexp.MustCompile(`Use:\s*"([^"\s]+)`)
+	addChildRe := regexp.MustCompile(`\.AddCommand\(\s*(new\w+Cmd)\b`)
+
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			continue
+		}
+		src := string(data)
+
+		// Root detection runs on the FULL file source — the function that
+		// wires subcommands onto rootCmd may be Execute() or any helper,
+		// not necessarily a new*Cmd constructor.
+		for _, rm := range rootAddRe.FindAllStringSubmatch(src, -1) {
+			rootFuncs = append(rootFuncs, rm[1])
+		}
+
+		// Per-function Use + children extraction.
+		for _, m := range funcHeaderRe.FindAllStringSubmatchIndex(src, -1) {
+			name := src[m[2]:m[3]]
+			braceIdx := strings.Index(src[m[1]:], "{")
+			if braceIdx < 0 {
+				continue
+			}
+			bodyStart := m[1] + braceIdx + 1
+			depth := 1
+			bodyEnd := bodyStart
+			for bodyEnd < len(src) && depth > 0 {
+				switch src[bodyEnd] {
+				case '{':
+					depth++
+				case '}':
+					depth--
+				}
+				bodyEnd++
+			}
+			body := src[bodyStart:bodyEnd]
+
+			entry := &cmdFunc{}
+			if useMatch := useRe.FindStringSubmatch(body); useMatch != nil {
+				entry.use = strings.Fields(useMatch[1])[0]
+			}
+			for _, cm := range addChildRe.FindAllStringSubmatch(body, -1) {
+				entry.children = append(entry.children, cm[1])
+			}
+			funcs[name] = entry
+		}
+	}
+
+	// No roots identified — we can't reliably build a tree. Caller will
+	// fall back to leaf-only matching.
+	if len(rootFuncs) == 0 || len(funcs) == 0 {
+		return map[string]bool{}
+	}
+
+	// BFS from each root, emitting full paths.
+	paths := map[string]bool{}
+	type qItem struct {
+		funcName string
+		prefix   string
+	}
+	queue := make([]qItem, 0, len(rootFuncs))
+	for _, rf := range rootFuncs {
+		queue = append(queue, qItem{funcName: rf, prefix: ""})
+	}
+	seen := map[string]bool{}
+	for len(queue) > 0 {
+		it := queue[0]
+		queue = queue[1:]
+		// Dedupe by (funcName, prefix) below. A pure funcName dedupe would
+		// drop legitimate re-traversals under different parents; a cycle
+		// would keep pushing new (funcName, new-prefix) pairs and the
+		// `seen[key]` check catches it.
+		fn, ok := funcs[it.funcName]
+		if !ok || fn.use == "" {
+			continue
+		}
+		path := fn.use
+		if it.prefix != "" {
+			path = it.prefix + " " + fn.use
+		}
+		paths[path] = true
+		// Dedupe traversal by (funcName, prefix).
+		key := it.funcName + "@" + it.prefix
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		for _, child := range fn.children {
+			queue = append(queue, qItem{funcName: child, prefix: path})
+		}
+	}
+	return paths
 }
 
 func LoadDogfoodResults(dir string) (*DogfoodReport, error) {
