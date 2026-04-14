@@ -623,6 +623,7 @@ func (g *Generator) Generate() error {
 		filepath.Join("internal", "cli"),
 		filepath.Join("internal", "cache"),
 		filepath.Join("internal", "client"),
+		filepath.Join("internal", "cliutil"),
 		filepath.Join("internal", "config"),
 		filepath.Join("internal", "types"),
 	}
@@ -646,18 +647,21 @@ func (g *Generator) Generate() error {
 
 	// Generate single files
 	singleFiles := map[string]string{
-		"main.go.tmpl":      filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
-		"helpers.go.tmpl":   filepath.Join("internal", "cli", "helpers.go"),
-		"doctor.go.tmpl":    filepath.Join("internal", "cli", "doctor.go"),
-		"config.go.tmpl":    filepath.Join("internal", "config", "config.go"),
-		"cache.go.tmpl":     filepath.Join("internal", "cache", "cache.go"),
-		"client.go.tmpl":    filepath.Join("internal", "client", "client.go"),
-		"types.go.tmpl":     filepath.Join("internal", "types", "types.go"),
-		"golangci.yml.tmpl": ".golangci.yml",
-		"readme.md.tmpl":    "README.md",
-		"skill.md.tmpl":     "SKILL.md",
-		"LICENSE.tmpl":      "LICENSE",
-		"NOTICE.tmpl":       "NOTICE",
+		"main.go.tmpl":           filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
+		"helpers.go.tmpl":        filepath.Join("internal", "cli", "helpers.go"),
+		"doctor.go.tmpl":         filepath.Join("internal", "cli", "doctor.go"),
+		"config.go.tmpl":         filepath.Join("internal", "config", "config.go"),
+		"cache.go.tmpl":          filepath.Join("internal", "cache", "cache.go"),
+		"client.go.tmpl":         filepath.Join("internal", "client", "client.go"),
+		"cliutil_fanout.go.tmpl": filepath.Join("internal", "cliutil", "fanout.go"),
+		"cliutil_text.go.tmpl":   filepath.Join("internal", "cliutil", "text.go"),
+		"cliutil_test.go.tmpl":   filepath.Join("internal", "cliutil", "cliutil_test.go"),
+		"types.go.tmpl":          filepath.Join("internal", "types", "types.go"),
+		"golangci.yml.tmpl":      ".golangci.yml",
+		"readme.md.tmpl":         "README.md",
+		"skill.md.tmpl":          "SKILL.md",
+		"LICENSE.tmpl":           "LICENSE",
+		"NOTICE.tmpl":            "NOTICE",
 	}
 
 	for tmplName, outPath := range singleFiles {

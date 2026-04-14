@@ -875,3 +875,205 @@ func writeTestFile(t *testing.T, path string, content string) {
 	t.Helper()
 	require.NoError(t, os.WriteFile(path, []byte(content), 0o644))
 }
+
+// --- checkTestPresence ---
+
+func TestCheckTestPresence_PureLogicPackageWithoutTests(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "internal", "recipes")
+	require.NoError(t, os.MkdirAll(pkg, 0o755))
+	writeTestFile(t, filepath.Join(pkg, "parse.go"), `package recipes
+
+func Parse(s string) string { return s }
+func Normalize(s string) string { return s }
+`)
+
+	result := checkTestPresence(dir)
+	assert.Equal(t, 1, result.Checked)
+	assert.Equal(t, []string{"recipes"}, result.MissingTests)
+	assert.Empty(t, result.ThinTests)
+}
+
+func TestCheckTestPresence_CommandPackageSkipped(t *testing.T) {
+	dir := t.TempDir()
+	// A package that uses cobra.Command is skipped — it's command wiring,
+	// not pure logic. Test-presence check should leave it alone even with
+	// exported functions and no _test.go.
+	pkg := filepath.Join(dir, "internal", "adhocwire")
+	require.NoError(t, os.MkdirAll(pkg, 0o755))
+	writeTestFile(t, filepath.Join(pkg, "cmd.go"), `package adhocwire
+
+import "github.com/spf13/cobra"
+
+func NewCmd() *cobra.Command { return &cobra.Command{} }
+`)
+
+	result := checkTestPresence(dir)
+	assert.Equal(t, 0, result.Checked)
+	assert.Empty(t, result.MissingTests)
+}
+
+func TestCheckTestPresence_OnlyUnexportedFuncsSkipped(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "internal", "glue")
+	require.NoError(t, os.MkdirAll(pkg, 0o755))
+	// No exported funcs → no public surface to test → skipped.
+	writeTestFile(t, filepath.Join(pkg, "glue.go"), `package glue
+
+func helper() string { return "x" }
+type Kind string
+`)
+
+	result := checkTestPresence(dir)
+	assert.Equal(t, 0, result.Checked)
+}
+
+func TestCheckTestPresence_GeneratorEmittedPackagesSkipped(t *testing.T) {
+	dir := t.TempDir()
+	// Even pure-logic-shaped packages that are generator-emitted (types,
+	// config, client, etc.) are NOT flagged — test seeding for them is a
+	// separate template-level concern.
+	for _, name := range []string{"types", "config", "client", "cache", "cliutil"} {
+		pkg := filepath.Join(dir, "internal", name)
+		require.NoError(t, os.MkdirAll(pkg, 0o755))
+		writeTestFile(t, filepath.Join(pkg, name+".go"), `package `+name+`
+
+func Exported() string { return "x" }
+func AnotherExported() string { return "y" }
+`)
+	}
+
+	result := checkTestPresence(dir)
+	assert.Equal(t, 0, result.Checked)
+	assert.Empty(t, result.MissingTests)
+}
+
+func TestCheckTestPresence_ThinTestsFlaggedAsWarning(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "internal", "recipes")
+	require.NoError(t, os.MkdirAll(pkg, 0o755))
+	writeTestFile(t, filepath.Join(pkg, "parse.go"), `package recipes
+
+func Parse(s string) string { return s }
+func Normalize(s string) string { return s }
+func Validate(s string) bool { return true }
+`)
+	// One test function — under the 3-test threshold; should surface as a
+	// thin-tests warning, not a hard missing-tests error.
+	writeTestFile(t, filepath.Join(pkg, "parse_test.go"), `package recipes
+
+import "testing"
+
+func TestParse(t *testing.T) {
+	if Parse("x") != "x" {
+		t.Fail()
+	}
+}
+`)
+
+	result := checkTestPresence(dir)
+	assert.Equal(t, 1, result.Checked)
+	assert.Empty(t, result.MissingTests)
+	require.Len(t, result.ThinTests, 1)
+	assert.Contains(t, result.ThinTests[0], "recipes")
+	assert.Contains(t, result.ThinTests[0], "1 test funcs")
+}
+
+func TestCheckTestPresence_AdequateTestsClean(t *testing.T) {
+	dir := t.TempDir()
+	pkg := filepath.Join(dir, "internal", "recipes")
+	require.NoError(t, os.MkdirAll(pkg, 0o755))
+	writeTestFile(t, filepath.Join(pkg, "parse.go"), `package recipes
+
+func Parse(s string) string { return s }
+`)
+	// 3 test functions → passes both thresholds.
+	writeTestFile(t, filepath.Join(pkg, "parse_test.go"), `package recipes
+
+import "testing"
+
+func TestParseHappy(t *testing.T) {}
+func TestParseEmpty(t *testing.T) {}
+func TestParseError(t *testing.T) {}
+`)
+
+	result := checkTestPresence(dir)
+	assert.Equal(t, 1, result.Checked)
+	assert.Empty(t, result.MissingTests)
+	assert.Empty(t, result.ThinTests)
+}
+
+func TestCheckTestPresence_MissingInternalDir(t *testing.T) {
+	dir := t.TempDir()
+	// No internal/ directory — result is empty, no panic.
+	result := checkTestPresence(dir)
+	assert.Equal(t, 0, result.Checked)
+	assert.Empty(t, result.MissingTests)
+	assert.Empty(t, result.ThinTests)
+}
+
+func TestCollectDogfoodIssues_IncludesMissingTests(t *testing.T) {
+	report := &DogfoodReport{
+		TestPresence: TestPresenceResult{
+			Checked:      2,
+			MissingTests: []string{"recipes", "goat"},
+		},
+	}
+	issues := collectDogfoodIssues(report, false)
+	assert.Contains(t, issues, "pure-logic packages with no tests: recipes, goat")
+}
+
+func TestDeriveDogfoodVerdict_FailsOnMissingTests(t *testing.T) {
+	// Regression test: the plan's R5 gate promises "pure-logic packages with
+	// zero tests fail shipcheck." Earlier drafts of this work added the
+	// issue to report.Issues but never read TestPresence.MissingTests from
+	// deriveDogfoodVerdict, leaving the verdict at PASS despite the issue.
+	// Without this test the asymmetry is easy to reintroduce.
+	report := passingDogfoodReport()
+	report.TestPresence = TestPresenceResult{
+		Checked:      1,
+		MissingTests: []string{"recipes"},
+	}
+	assert.Equal(t, "FAIL", deriveDogfoodVerdict(report, false))
+}
+
+func TestDeriveDogfoodVerdict_PassesWithOnlyThinTests(t *testing.T) {
+	// ThinTests alone must not trigger FAIL — they're deferred to Phase 4.85
+	// agentic review, not a hard gate.
+	report := passingDogfoodReport()
+	report.TestPresence = TestPresenceResult{
+		Checked:   1,
+		ThinTests: []string{"recipes (1 test funcs)"},
+	}
+	assert.Equal(t, "PASS", deriveDogfoodVerdict(report, false))
+}
+
+// passingDogfoodReport returns a DogfoodReport populated with the minimum
+// set of passing sub-check values so deriveDogfoodVerdict returns PASS by
+// default. Tests compose on top of this to isolate the one field they're
+// exercising without tripping an unrelated default-WARN branch (e.g.,
+// PipelineCheck.SyncCallsDomain zero-value triggers WARN).
+func passingDogfoodReport() *DogfoodReport {
+	return &DogfoodReport{
+		PipelineCheck: PipelineResult{SyncCallsDomain: true},
+		WiringCheck: WiringCheckResult{
+			ConfigConsist: ConfigConsistResult{Consistent: true},
+		},
+	}
+}
+
+func TestCollectDogfoodIssues_ThinTestsNotHardIssue(t *testing.T) {
+	// ThinTests are warnings for Wave B's Phase 4.85 review, not hard
+	// dogfood issues. Verify they don't leak into the issues slice.
+	report := &DogfoodReport{
+		TestPresence: TestPresenceResult{
+			Checked:   1,
+			ThinTests: []string{"recipes (1 test funcs)"},
+		},
+	}
+	issues := collectDogfoodIssues(report, false)
+	for _, i := range issues {
+		assert.NotContains(t, i, "recipes")
+		assert.NotContains(t, i, "thin")
+	}
+}

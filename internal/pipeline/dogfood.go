@@ -30,7 +30,28 @@ type DogfoodReport struct {
 	ExampleCheck       ExampleCheckResult       `json:"example_check"`
 	WiringCheck        WiringCheckResult        `json:"wiring_check"`
 	NovelFeaturesCheck NovelFeaturesCheckResult `json:"novel_features_check"`
+	TestPresence       TestPresenceResult       `json:"test_presence"`
 	Issues             []string                 `json:"issues"`
+}
+
+// TestPresenceResult reports coverage gaps in agent-authored pure-logic
+// packages under internal/. The walker only inspects packages outside the
+// known generator-emitted set, so this check targets agent-authored novel
+// code — the zero-tests-shipped pattern that recipe-goat's internal/recipes
+// (jsonld.go, subs.go) exhibited pre-PR-#68.
+//
+// Two tiers:
+//
+//   - MissingTests: pure-logic packages with zero _test.go files. Counts as
+//     a hard dogfood issue (shipcheck failure).
+//   - ThinTests: pure-logic packages with 1-2 Test* functions. Flagged as a
+//     warning surfaced to Phase 4.85 (Wave B) for agentic review — trivial
+//     pass-the-gate tests look like thin coverage and should get a second
+//     look.
+type TestPresenceResult struct {
+	Checked      int      `json:"checked"`
+	MissingTests []string `json:"missing_tests,omitempty"`
+	ThinTests    []string `json:"thin_tests,omitempty"`
 }
 
 // NovelFeaturesCheckResult tracks whether transcendence features planned
@@ -163,6 +184,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.ExampleCheck = checkExamples(dir)
 	report.WiringCheck = checkWiring(dir)
 	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
+	report.TestPresence = checkTestPresence(dir)
 	report.Issues = collectDogfoodIssues(report, spec != nil)
 	report.Verdict = deriveDogfoodVerdict(report, spec != nil)
 
@@ -884,6 +906,128 @@ func extractFunctionBodies(source string) map[string]string {
 	return bodies
 }
 
+// generatorEmittedPackages names internal/* packages emitted by the Printing
+// Press itself as templates. They're excluded from checkTestPresence because
+// test seeding for them is a separate template-level concern — either the
+// package is covered by its own _test.go template (cliutil) or it's glue
+// that the dogfood structural check shouldn't flag (config, client, types,
+// etc. contain mostly declarations, not agent-authored logic).
+//
+// Agent-authored packages — the ones agents create during Phase 3 for novel
+// features like recipe-goat's internal/recipes/ — are by definition not in
+// this set and so get inspected.
+var generatorEmittedPackages = map[string]bool{
+	"cli":     true, // cobra commands; also skipped via cobra detection below
+	"cliutil": true, // shipped with cliutil_test.go via template
+	"cache":   true,
+	"client":  true, // GraphQL content (graphql.go, queries.go) also lives here — no separate package
+	"config":  true,
+	"mcp":     true, // conditionally emitted for MCP-enabled CLIs
+	"store":   true, // conditionally emitted for Vision.Store CLIs
+	"types":   true,
+}
+
+// packageTestStats describes one internal/<pkg>/ directory's test coverage,
+// used internally by checkTestPresence.
+type packageTestStats struct {
+	pkgName       string
+	goFileCount   int
+	testFileCount int
+	testFuncCount int // count of ^func Test[A-Z]* declarations across all files
+	exportedFuncs int // count of ^func [A-Z]* declarations (exported funcs)
+	hasCobraUsage bool
+}
+
+// checkTestPresence walks internal/*/ subdirectories of the generated CLI,
+// groups .go files by package, counts _test.go files and Test* function
+// declarations per package, and identifies packages that should have tests
+// but don't.
+//
+// A package is flagged as a violation when ALL of:
+//   - it sits under internal/ (not a generator-emitted package, not cli)
+//   - it has at least one exported function (^func [A-Z])
+//   - it contains no cobra.Command{} usage (not a command wiring package)
+//   - it has zero _test.go files (hard) OR fewer than 3 Test* functions (thin)
+//
+// Hard violations go to MissingTests; thin violations to ThinTests. See
+// TestPresenceResult for how each tier is used downstream.
+func checkTestPresence(dir string) TestPresenceResult {
+	internalDir := filepath.Join(dir, "internal")
+	entries, err := os.ReadDir(internalDir)
+	if err != nil {
+		return TestPresenceResult{}
+	}
+
+	result := TestPresenceResult{}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		name := entry.Name()
+		if generatorEmittedPackages[name] {
+			continue
+		}
+		stats := collectPackageTestStats(filepath.Join(internalDir, name), name)
+		if stats == nil {
+			continue
+		}
+		if stats.hasCobraUsage {
+			continue // command wiring, not a pure-logic target
+		}
+		if stats.exportedFuncs == 0 {
+			continue // types/constants only, no function surface to test
+		}
+		result.Checked++
+		switch {
+		case stats.testFileCount == 0:
+			result.MissingTests = append(result.MissingTests, name)
+		case stats.testFuncCount < 3:
+			result.ThinTests = append(result.ThinTests, fmt.Sprintf("%s (%d test funcs)", name, stats.testFuncCount))
+		}
+	}
+	return result
+}
+
+// collectPackageTestStats scans one internal/<pkg>/ directory non-recursively
+// and returns an aggregate view of its test coverage + function surface.
+// Returns nil when the directory has no .go files (not a Go package).
+var exportedFuncRe = regexp.MustCompile(`(?m)^func\s+(?:\([^)]*\)\s+)?([A-Z]\w*)\s*[\[(]`)
+var testFuncRe = regexp.MustCompile(`(?m)^func\s+(Test[A-Z]\w*)\s*\(`)
+var cobraUsageRe = regexp.MustCompile(`cobra\.Command\{|&cobra\.Command\{|spf13/cobra`)
+
+func collectPackageTestStats(pkgDir, pkgName string) *packageTestStats {
+	entries, err := os.ReadDir(pkgDir)
+	if err != nil {
+		return nil
+	}
+	stats := &packageTestStats{pkgName: pkgName}
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(pkgDir, e.Name()))
+		if err != nil {
+			continue
+		}
+		source := string(data)
+		isTestFile := strings.HasSuffix(e.Name(), "_test.go")
+		if isTestFile {
+			stats.testFileCount++
+			stats.testFuncCount += len(testFuncRe.FindAllString(source, -1))
+			continue
+		}
+		stats.goFileCount++
+		stats.exportedFuncs += len(exportedFuncRe.FindAllString(source, -1))
+		if cobraUsageRe.MatchString(source) {
+			stats.hasCobraUsage = true
+		}
+	}
+	if stats.goFileCount == 0 {
+		return nil
+	}
+	return stats
+}
+
 func checkPipelineIntegrity(dir string) PipelineResult {
 	result := PipelineResult{
 		Detail: "sync/search/store files not found",
@@ -965,6 +1109,12 @@ func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
 	if !report.WiringCheck.ConfigConsist.Consistent && len(report.WiringCheck.ConfigConsist.Mismatched) > 0 {
 		return "FAIL"
 	}
+	if len(report.TestPresence.MissingTests) > 0 {
+		// Pure-logic packages with zero tests fail shipcheck. This enforces the
+		// plan's R5 gate structurally — the skill prompt alone is insufficient
+		// (agents rationalize skipping tests). See docs/plans/2026-04-13-001.
+		return "FAIL"
+	}
 	if len(report.WiringCheck.WorkflowComplete.UnmappedSteps) > 0 {
 		return "WARN"
 	}
@@ -1023,6 +1173,14 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 			report.NovelFeaturesCheck.Planned,
 			strings.Join(report.NovelFeaturesCheck.Missing, ", ")))
 	}
+	if len(report.TestPresence.MissingTests) > 0 {
+		issues = append(issues, fmt.Sprintf("pure-logic packages with no tests: %s",
+			strings.Join(report.TestPresence.MissingTests, ", ")))
+	}
+	// ThinTests is intentionally NOT added as a hard issue — it's a warning
+	// surfaced to Wave B's Phase 4.85 agentic reviewer for deeper judgment.
+	// Hard-gating on test-function count would reward trivial placeholder
+	// tests; the agentic review is better at judging coverage quality.
 	return issues
 }
 

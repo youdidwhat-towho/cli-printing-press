@@ -23,9 +23,10 @@ func TestGenerateProjectsCompile(t *testing.T) {
 		specPath      string
 		expectedFiles int
 	}{
-		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 32},
-		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 36},
-		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 36},
+		// +3 for cliutil package: fanout.go, text.go, cliutil_test.go
+		{name: "stytch", specPath: filepath.Join("..", "..", "testdata", "stytch.yaml"), expectedFiles: 35},
+		{name: "clerk", specPath: filepath.Join("..", "..", "testdata", "clerk.yaml"), expectedFiles: 39},
+		{name: "loops", specPath: filepath.Join("..", "..", "testdata", "loops.yaml"), expectedFiles: 39},
 	}
 
 	for _, tt := range tests {
@@ -51,6 +52,52 @@ func TestGenerateProjectsCompile(t *testing.T) {
 			require.NotZero(t, info.Size())
 		})
 	}
+}
+
+// TestGenerateCliutilPackage verifies that every generated CLI ships with
+// the shared internal/cliutil package (fanout + CleanText) and that its
+// tests pass. This is the structural backstop for the Wave A plan's R1
+// (fan-out helper) and R2 (text normalization) requirements — the package
+// exists for agent-authored novel code to import as cliutil.FanoutRun /
+// cliutil.CleanText without colliding with symbols in package cli.
+func TestGenerateCliutilPackage(t *testing.T) {
+	t.Parallel()
+
+	apiSpec, err := spec.Parse(filepath.Join("..", "..", "testdata", "stytch.yaml"))
+	require.NoError(t, err)
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	// All three cliutil files must be emitted.
+	cliutilDir := filepath.Join(outputDir, "internal", "cliutil")
+	for _, name := range []string{"fanout.go", "text.go", "cliutil_test.go"} {
+		_, err := os.Stat(filepath.Join(cliutilDir, name))
+		require.NoError(t, err, "expected %s to be emitted", name)
+	}
+
+	// Rendered source must contain the key exported symbols so agent-authored
+	// callers can rely on them being present.
+	for _, probe := range []struct {
+		file    string
+		snippet string
+	}{
+		{"fanout.go", "func FanoutRun["},
+		{"fanout.go", "func FanoutReportErrors("},
+		{"fanout.go", "func WithConcurrency("},
+		{"fanout.go", "type FanoutError struct"},
+		{"fanout.go", "type FanoutResult["},
+		{"text.go", "func CleanText("},
+	} {
+		data, err := os.ReadFile(filepath.Join(cliutilDir, probe.file))
+		require.NoError(t, err)
+		assert.Contains(t, string(data), probe.snippet, "%s missing %q", probe.file, probe.snippet)
+	}
+
+	// The generated cliutil package must compile and its tests must pass.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "test", "./internal/cliutil/...")
 }
 
 func TestGenerateOAuth2AuthTemplateConditionally(t *testing.T) {
