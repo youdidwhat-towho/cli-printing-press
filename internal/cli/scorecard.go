@@ -115,6 +115,22 @@ func newScorecardCmd() *cobra.Command {
 							}
 						}
 					}
+					// Wave B output-quality warnings are surfaced here so a
+					// developer running scorecard without --json sees them.
+					// Wave A review flagged the "human sees less than agent"
+					// gap as an agent-native parity concern.
+					warnCount := 0
+					for _, f := range live.Features {
+						warnCount += len(f.Warnings)
+					}
+					if warnCount > 0 {
+						fmt.Printf("  Warnings (%d): not blocking in Wave B — flip to failures in Wave C after calibration\n", warnCount)
+						for _, f := range live.Features {
+							for _, w := range f.Warnings {
+								fmt.Printf("    - %s: %s\n", f.Name, w)
+							}
+						}
+					}
 				}
 			}
 

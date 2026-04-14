@@ -68,19 +68,34 @@ func (r *LiveCheckResult) Checked() int {
 
 // LiveFeatureResult is one feature's outcome.
 //
+// OutputSample carries a bounded snapshot of the captured stdout so
+// downstream consumers (Phase 4.85's agentic output review in particular)
+// can inspect what the command actually produced without re-invoking the
+// CLI. Re-invocation is brittle for stochastic endpoints, expensive for
+// rate-limited ones, and auth-dependent for most — persisting a sample
+// avoids all three.
+//
 // Warnings carries advisory findings that don't flip the feature's Status
 // — the plan's Wave B ships output-quality checks (like raw HTML entities)
 // as warnings for a 2-week calibration window before Wave C escalates them
 // to failures. Consumers should surface warnings in reports but not factor
 // them into pass-rate math until Wave C lands.
 type LiveFeatureResult struct {
-	Name     string     `json:"name"`
-	Command  string     `json:"command"`
-	Example  string     `json:"example"`
-	Status   LiveStatus `json:"status"`
-	Reason   string     `json:"reason,omitempty"`
-	Warnings []string   `json:"warnings,omitempty"`
+	Name         string     `json:"name"`
+	Command      string     `json:"command"`
+	Example      string     `json:"example"`
+	Status       LiveStatus `json:"status"`
+	Reason       string     `json:"reason,omitempty"`
+	Warnings     []string   `json:"warnings,omitempty"`
+	OutputSample string     `json:"output_sample,omitempty"`
 }
+
+// outputSampleMaxBytes caps the captured-output snapshot stored on each
+// LiveFeatureResult. The raw capture buffer allows up to MaxOutputBytes
+// (1 MiB) but the serialized sample is bounded much tighter so scorecard
+// JSON files stay readable and agentic reviewers don't blow through their
+// context window on one feature's output.
+const outputSampleMaxBytes = 4096
 
 // LiveCheckOptions bundles the optional knobs for RunLiveCheck. CLIDir is
 // required; every other field has a sensible zero-value default.
@@ -292,29 +307,47 @@ func runOneFeatureCheck(cliDir, binaryPath string, f NovelFeature, timeout time.
 		}
 	}
 
+	stdout := stdoutCap.String()
 	result.Status = StatusPass
-	if msg := detectRawHTMLEntities(stdoutCap.String(), args); msg != "" {
+	result.OutputSample = sampleOutput(stdout)
+	if msg := detectRawHTMLEntities(stdout, args); msg != "" {
 		result.Warnings = append(result.Warnings, msg)
 	}
 	return result
 }
 
-// rawHTMLEntityRe matches numeric HTML character references like &#39; (the
-// recipe-goat "The Food Lab&#39;s" bug). Named entities (&amp;, &quot;, &lt;)
-// are intentionally excluded in Wave B — they false-positive on legitimate
-// JSON strings ("AT&amp;T") and on documentation text, so we calibrate the
+// sampleOutput truncates captured stdout to outputSampleMaxBytes for
+// persistence on LiveFeatureResult.OutputSample. An ellipsis marker at the
+// boundary tells downstream readers the snapshot is truncated.
+func sampleOutput(s string) string {
+	if len(s) <= outputSampleMaxBytes {
+		return s
+	}
+	return s[:outputSampleMaxBytes] + "…[truncated]"
+}
+
+// rawHTMLEntityRe matches numeric HTML character references, both decimal
+// (&#39;) and hex (&#x27;). Named entities (&amp;, &quot;, &lt;) are
+// intentionally excluded in Wave B — they false-positive on legitimate JSON
+// strings ("AT&amp;T") and on documentation text, so we calibrate the
 // stricter numeric-only rule first. Wave C may broaden to named entities
 // after observing the library's actual output patterns.
-var rawHTMLEntityRe = regexp.MustCompile(`&#\d+;`)
+//
+// The digit count is bounded at 10 to prevent a malicious output like
+// "&#99999999999...;" from forcing the regex engine into a large matched
+// span that then propagates into the warning message. Valid Unicode code
+// points fit in 7 decimal digits (10FFFF = 1,114,111), so 10 is a generous
+// upper bound that stays well inside regex budget.
+var rawHTMLEntityRe = regexp.MustCompile(`&#[xX]?[0-9a-fA-F]{1,10};`)
 
 // detectRawHTMLEntities returns a short human-readable reason when output
 // contains raw numeric HTML entities, or "" when output is clean. Gated to
 // non-JSON output so JSON-mode features (whose output legitimately contains
 // escape sequences) don't trip the check.
 //
-// Detection heuristics for JSON mode:
-//   - `--json` appears in args
-//   - First non-whitespace character of output is `{` or `[`
+// JSON-mode detection:
+//   - any arg that is `--json` or begins with `--json=` (cobra accepts both)
+//   - first non-whitespace character of output is `{` or `[`
 //
 // Both heuristics are conservative: a feature that renders JSON inside a
 // human table would still be checked, which is the right behavior.
@@ -326,7 +359,7 @@ func detectRawHTMLEntities(output string, args []string) string {
 	// Skip JSON-mode: agent-facing output legitimately contains escape
 	// sequences and isn't rendered to a human terminal.
 	for _, a := range args {
-		if a == "--json" {
+		if a == "--json" || strings.HasPrefix(a, "--json=") {
 			return ""
 		}
 	}
@@ -336,6 +369,13 @@ func detectRawHTMLEntities(output string, args []string) string {
 	match := rawHTMLEntityRe.FindString(output)
 	if match == "" {
 		return ""
+	}
+	// Cap the match-echo so a pathological output (e.g., a huge
+	// numeric ref — guarded by the regex's 10-digit bound, but the
+	// warning message still benefits from a defensive cap) can't
+	// produce megabyte-sized warning strings in the scorecard JSON.
+	if len(match) > 64 {
+		match = match[:64] + "…"
 	}
 	return fmt.Sprintf("raw HTML entity %q in output (decode with cliutil.CleanText or equivalent)", match)
 }

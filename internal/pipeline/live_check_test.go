@@ -375,9 +375,15 @@ func TestDetectRawHTMLEntities_DetectsNumericEntity(t *testing.T) {
 		name   string
 		output string
 	}{
-		{"apostrophe", "The Food Lab&#39;s Chocolate Chip Cookies"},
-		{"typographic apostrophe", "Ben&#8217;s Pizza"},
-		{"entity mid-line", "Row 1\nRow 2 with &#34; in it\nRow 3"},
+		{"decimal apostrophe", "The Food Lab&#39;s Chocolate Chip Cookies"},
+		{"decimal typographic apostrophe", "Ben&#8217;s Pizza"},
+		{"decimal mid-line", "Row 1\nRow 2 with &#34; in it\nRow 3"},
+		// Hex numeric entities are equally common — APIs that encode
+		// apostrophes as &#x27; should trip the same check. Decimal-only
+		// regex was an oversight flagged by Wave B ce:review.
+		{"hex lowercase", "Ben&#x27;s Pizza"},
+		{"hex uppercase x", "foo&#X27;bar"},
+		{"hex multi-char", "quote&#x2019;end"},
 	}
 	for _, tc := range cases {
 		msg := detectRawHTMLEntities(tc.output, nil)
@@ -392,6 +398,11 @@ func TestDetectRawHTMLEntities_SkipsWhenJSONFlagPresent(t *testing.T) {
 	out := `{"title": "The Food Lab&#39;s Cookies"}`
 	require.Empty(t, detectRawHTMLEntities(out, []string{"--json"}))
 	require.Empty(t, detectRawHTMLEntities(out, []string{"goat", "brownies", "--json", "--limit", "5"}))
+	// Cobra accepts `--json=true` / `--json=false` as distinct tokens
+	// from bare `--json`. Adversarial review flagged the exact-match
+	// form as a bypass hole.
+	require.Empty(t, detectRawHTMLEntities(out, []string{"--json=true"}))
+	require.Empty(t, detectRawHTMLEntities(out, []string{"cmd", "--json=false", "--limit", "5"}))
 }
 
 func TestDetectRawHTMLEntities_SkipsWhenOutputStartsWithJSON(t *testing.T) {
@@ -446,4 +457,50 @@ func buildFakeCLI(t *testing.T, script string) string {
 	path := filepath.Join(dir, "fake-cli")
 	require.NoError(t, os.WriteFile(path, []byte(script), 0o755))
 	return path
+}
+
+func TestRunOneFeatureCheck_PopulatesOutputSample(t *testing.T) {
+	// Phase 4.85's agentic reviewer needs the captured stdout to judge
+	// output plausibility without re-invoking the binary. OutputSample
+	// must be populated on pass results.
+	binary := buildFakeCLI(t, `#!/usr/bin/env bash
+printf 'Hello cookie world\n'
+`)
+	feature := NovelFeature{
+		Name:    "demo",
+		Command: "demo",
+		Example: "bin demo cookie",
+	}
+	result := runOneFeatureCheck(t.TempDir(), binary, feature, 5*time.Second)
+	require.Equal(t, StatusPass, result.Status, "reason: %s", result.Reason)
+	require.Contains(t, result.OutputSample, "Hello cookie world")
+}
+
+func TestSampleOutput_TruncatesLargeCapture(t *testing.T) {
+	// Guard the serialized-sample size so one feature can't bloat the
+	// scorecard JSON or overwhelm an agentic reviewer's context window.
+	big := strings.Repeat("x", outputSampleMaxBytes*2)
+	got := sampleOutput(big)
+	require.Contains(t, got, "…[truncated]", "truncation marker missing")
+	require.LessOrEqual(t, len(got), outputSampleMaxBytes+len("…[truncated]"))
+}
+
+func TestSampleOutput_ShortCapturePassesThrough(t *testing.T) {
+	// Small captures must not be truncated or rewritten — they need to
+	// survive a JSON round-trip byte-identical so downstream tests can
+	// assert exact content.
+	short := "hello world"
+	require.Equal(t, short, sampleOutput(short))
+}
+
+func TestDetectRawHTMLEntities_TruncatesLongMatchInMessage(t *testing.T) {
+	// Regex is bounded to 10 digits so this shouldn't trigger in
+	// practice, but defend against future regex broadening: warning
+	// message must never embed an unbounded match string.
+	//
+	// Construct an entity at the upper regex bound (10 digits).
+	out := "text before " + "&#9999999999;" + " text after"
+	msg := detectRawHTMLEntities(out, nil)
+	require.NotEmpty(t, msg)
+	require.LessOrEqual(t, len(msg), 200, "warning message should stay bounded regardless of match length")
 }

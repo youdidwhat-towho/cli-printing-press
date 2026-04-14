@@ -1728,13 +1728,13 @@ The agent can't verify runtime behavior without running commands; stick to help-
 
 **Runs after Phase 4.8, before Phase 5.** Phase 4.8 reviews SKILL.md prose against the shipped CLI. Phase 4.85 reviews the CLI's **actual command output** for plausibility — the class of bug rule-based checks can't encode:
 
-- `sub buttermilk` returning oil/coconut oil (substring match matches "butter" inside "buttermilk")
-- `trending --site smittenkitchen,budgetbytes` silently dropping one source with no warning
-- Top-ranked result for `goat brownies` is a Texas Chili recipe (broken extractor returned off-query matches)
-- URLs in output point to `/random/` or `/feed/` rather than real permalinks
-- Ranking weights produce implausible top-N orderings
+- Substring-match results that coincidentally contain the query but don't match semantically (e.g., a query matches a substring of a larger unrelated term)
+- Aggregation commands silently dropping sources when only some of the requested N come back
+- Ranking or sort commands returning top-N results that aren't plausibly the best for the query (broken weights, extractor fallbacks)
+- URLs in output pointing at category index pages, feed endpoints, or random-selector routes rather than canonical content permalinks
+- Format bugs that live-check's rule-based layer doesn't catch (mojibake, inconsistent pluralization, truncated/wrapped cell content)
 
-These are recipe-goat bugs the user caught in 5 minutes of hands-on testing. None were surfaced by existing dogfood, verify, or the rule-based `scorecard --live-check` rules — only a human-in-the-loop pattern-matcher found them. Phase 4.85 is that loop.
+These bugs are typically surfaced by 5 minutes of hands-on testing but slip past existing dogfood, verify, and the rule-based `scorecard --live-check` rules — only a human-in-the-loop pattern-matcher finds them. Phase 4.85 is that loop. A concrete case history that motivated this phase: `docs/retros/2026-04-13-recipe-goat-retro.md`.
 
 **Wave B rollout policy (first 2 weeks):** all findings from this phase are surfaced as **warnings**, not blockers. Shipcheck does not fail on Phase 4.85 findings. The goal of Wave B is to calibrate false-positive rates across domains (transactional APIs like Stripe, document stores like Notion, scraping CLIs like recipe-goat) before Wave C flips errors to blocking.
 
@@ -1750,10 +1750,10 @@ Use the Agent tool (general-purpose) with this prompt contract:
 >
 > For each of these checks, report findings under 50 words each. Only report issues a human user would notice in 5 minutes of hands-on testing — not every edge case a thorough QA pass might find:
 >
-> 1. **Output matches query intent.** For sampled novel features with a query argument, does the output contain results clearly related to the query? (Catches: `sub buttermilk` → butter/oil; `goat brownies` → chili; `search "tax forms"` → invoice templates.)
-> 2. **No obvious format bugs.** Does the output contain raw HTML entities, mojibake (question marks or replacement chars in titles), or malformed URLs (pointing at `/random/`, `/feed/`, category pages)? (Rule-based live-check catches numeric entities; this layer catches the broader class.)
-> 3. **Aggregation commands show all requested sources.** For commands with a `--source`/`--site`/`--region` CSV flag: if the user requested N sources, does output show N, or does stderr explain the missing ones? (Catches: trending silent drop.)
-> 4. **Result ordering/ranking makes sense.** For commands that claim to rank or sort, does the top result look plausibly best given the query? (Catches: broken score weights, off-by-one sort bugs, fallback to recency when relevance fails.)
+> 1. **Output matches query intent.** For sampled novel features with a query argument, does the output contain results clearly related to the query? Watch for results that coincidentally contain the query as a substring of an unrelated term, or fallback behavior where the extractor failed and returned adjacent (not matching) content.
+> 2. **No obvious format bugs.** Does the output contain raw HTML entities, mojibake (question marks or replacement chars in titles), or malformed URLs (pointing at category index pages, feed endpoints, or random-selector routes rather than canonical content permalinks)? Rule-based live-check catches numeric entities; this layer catches the broader class.
+> 3. **Aggregation commands show all requested sources.** For commands with a `--source`/`--site`/`--region` CSV flag: if the user requested N sources, does output show N, or does stderr explain the missing ones? Silent drops of failed sources are a top failure mode for fan-out commands.
+> 4. **Result ordering/ranking makes sense.** For commands that claim to rank or sort, does the top result look plausibly best given the query? Watch for broken score weights, off-by-one sort bugs, and silent fallback to recency when relevance computation fails.
 >
 > Return a list of findings. For each: check name, severity (`warning` in Wave B; `error` reserved for Wave C), one-line description, one-sentence fix suggestion. If the CLI passes all four checks, return "PASS — no findings."
 
@@ -1762,7 +1762,7 @@ Use the Agent tool (general-purpose) with this prompt contract:
 Wave B policy (current):
 
 - All findings surface as `warning` — never `error`. Shipcheck proceeds regardless.
-- Findings are recorded in the run's scorecard JSON as `agentic_output_review.findings[]` and displayed to the user for review.
+- Findings are returned in the reviewer agent's response to its caller (main skill at shipcheck, polish-worker during polish runs). The caller logs them to the run's artifact directory (e.g., `manuscripts/<api>/<run>/proofs/phase-4.85-findings.md`) and surfaces them to the user for review. Wave B does not persist findings into `scorecard.json` — that path is reserved for Wave C if findings become blocking.
 - The user decides case by case whether to fix before shipping.
 
 **Non-interactive contract (CI, cron, batch regeneration):**
@@ -1779,7 +1779,7 @@ Phase 4.85 also runs during `/printing-press-polish` as the backfill path for CL
 
 ### Why agentic vs template-only
 
-Output-plausibility questions are not pattern-matchable against source. Rule-based live-check rules cover what regexes can (numeric HTML entities, query-token absence). Everything else — "is butter a plausible substitute for buttermilk?", "does the top search result look related to the query?" — is an LLM-shaped question. The token cost is bounded (once per run, not per command) and the catch rate against the bug classes recipe-goat exhibited justifies the dispatch.
+Output-plausibility questions are not pattern-matchable against source. Rule-based live-check rules cover what regexes can (numeric HTML entities, query-token absence). Everything else — "are these substitution results plausibly correct for the query?", "does the top search result look related?" — is an LLM-shaped question. The token cost is bounded (once per run, not per command) and the catch rate against the bug classes that motivated this phase (see `docs/retros/2026-04-13-recipe-goat-retro.md` for a concrete case) justifies the dispatch.
 
 ### Known blind spots
 

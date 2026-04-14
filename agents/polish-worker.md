@@ -42,6 +42,10 @@ go build -o "$CLI_NAME" ./cmd/"$CLI_NAME" 2>&1
 # Diagnostics (use SPEC_FLAG="--spec $SPEC_PATH" when SPEC_PATH is non-empty)
 printing-press dogfood --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 printing-press verify --dir "$CLI_DIR" $SPEC_FLAG --json 2>&1
+# --live-check samples novel-feature outputs and populates
+# live_check.features[].warnings (Wave B entity detection) — required for
+# the "Output entity warnings" row below to have data to read.
+printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG --live-check --json > /tmp/polish-scorecard.json 2>&1 || true
 printing-press scorecard --dir "$CLI_DIR" $SPEC_FLAG 2>&1
 go vet ./... 2>&1
 ```
