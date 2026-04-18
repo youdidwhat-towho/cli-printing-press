@@ -25,6 +25,11 @@ import (
 //go:embed templates
 var templateFS embed.FS
 
+// TemplateFS exposes the embedded template tree for callers outside the
+// generator package (e.g. the patch subcommand that renders a subset of
+// templates against already-published CLIs).
+var TemplateFS = templateFS
+
 // ReadmeSource represents a credited ecosystem tool for the README.
 type ReadmeSource struct {
 	Name     string

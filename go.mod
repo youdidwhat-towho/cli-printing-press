@@ -3,6 +3,7 @@ module github.com/mvanhorn/cli-printing-press
 go 1.26.1
 
 require (
+	github.com/dave/dst v0.27.4
 	github.com/getkin/kin-openapi v0.133.0
 	github.com/mark3labs/mcp-go v0.47.0
 	github.com/spf13/cobra v1.10.2
@@ -30,4 +31,6 @@ require (
 	github.com/spf13/pflag v1.0.9 // indirect
 	github.com/woodsbury/decimal128 v1.3.0 // indirect
 	github.com/yosida95/uritemplate/v3 v3.0.2 // indirect
+	golang.org/x/mod v0.33.0 // indirect
+	golang.org/x/tools v0.42.0 // indirect
 )

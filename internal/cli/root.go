@@ -44,6 +44,7 @@ func Execute() error {
 	rootCmd.AddCommand(newVerifyCmd())
 	rootCmd.AddCommand(newVerifySkillCmd())
 	rootCmd.AddCommand(newEmbossCmd())
+	rootCmd.AddCommand(newPatchCmd())
 	rootCmd.AddCommand(newVisionCmd())
 	rootCmd.AddCommand(newVersionCmd())
 	rootCmd.AddCommand(newPrintCmd())
