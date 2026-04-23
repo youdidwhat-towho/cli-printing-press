@@ -116,6 +116,9 @@ Key terms used throughout this repo. Several have overloaded meanings — the gl
 | `cli` | Go binary, commands, flags, embedded catalog, docs | `feat(cli): add catalog subcommands` |
 | `skills` | Skill definitions (SKILL.md), references, setup contract | `fix(skills): remove repo checkout requirement` |
 | `ci` | Workflows, release config, goreleaser | `feat(ci): add release-please` |
+| `main` | release-please generated release PRs targeting `main` | `chore(main): release 2.2.0` |
+
+`main` is reserved for release-please PR titles. Human-authored changes should use `cli`, `skills`, or `ci`.
 
 Every commit and PR title must include one of these scopes. The `PR Title` action enforces this.
 

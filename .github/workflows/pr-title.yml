@@ -29,6 +29,7 @@ jobs:
             cli
             skills
             ci
+            main
           requireScope: true
           subjectPattern: ^.+$
           subjectPatternError: "PR title must have a description after the colon"

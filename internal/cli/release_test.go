@@ -93,3 +93,44 @@ func TestMarketplaceJSONHasNoPluginVersion(t *testing.T) {
 		}
 	}
 }
+
+func TestPRTitleWorkflowAllowsReleasePleaseScope(t *testing.T) {
+	// release-please uses the target branch as the conventional-commit scope
+	// for generated release PR titles, e.g. chore(main): release 2.2.0.
+	// The PR title workflow must allow that generated title or release PRs
+	// cannot merge.
+	data, err := os.ReadFile("../../.github/workflows/pr-title.yml")
+	require.NoError(t, err)
+
+	var workflow struct {
+		Jobs map[string]struct {
+			Steps []struct {
+				Uses string         `yaml:"uses"`
+				With map[string]any `yaml:"with"`
+			} `yaml:"steps"`
+		} `yaml:"jobs"`
+	}
+	require.NoError(t, yaml.Unmarshal(data, &workflow))
+
+	lintJob, ok := workflow.Jobs["lint"]
+	require.True(t, ok, "PR title workflow should have a lint job")
+
+	for _, step := range lintJob.Steps {
+		if !strings.HasPrefix(step.Uses, "amannn/action-semantic-pull-request@") {
+			continue
+		}
+
+		scopes, ok := step.With["scopes"].(string)
+		require.True(t, ok, "semantic pull request action should declare scopes")
+
+		allowed := map[string]bool{}
+		for _, scope := range strings.Fields(scopes) {
+			allowed[scope] = true
+		}
+
+		assert.True(t, allowed["main"], "release-please PR titles use main as the scope")
+		return
+	}
+
+	t.Fatal("PR title workflow should use amannn/action-semantic-pull-request")
+}
