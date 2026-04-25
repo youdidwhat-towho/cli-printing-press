@@ -29,9 +29,14 @@ func (g *Generator) dedupeFlagIdentifiers() {
 			res.Endpoints[epName] = ep
 		}
 		for subName, sub := range res.SubResources {
-			subKey := resName + "." + subName
+			// Sub-resource async lookups elsewhere in the generator (see
+			// generator.go:1195) key on subName/epName without the parent
+			// resource prefix; mirror that here so any future async
+			// detection on sub-resources protects the wait identifiers
+			// correctly. DetectAsyncJobs does not currently walk
+			// sub-resources, so this lookup is a no-op today.
 			for epName, ep := range sub.Endpoints {
-				idents, flags := reservedFlagNamesForEndpoint(subKey, epName, ep, g.AsyncJobs)
+				idents, flags := reservedFlagNamesForEndpoint(subName, epName, ep, g.AsyncJobs)
 				ep.Params = uniquifyParamNames(ep.Params, idents, flags)
 				sub.Endpoints[epName] = ep
 			}

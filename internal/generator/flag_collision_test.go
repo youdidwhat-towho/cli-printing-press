@@ -109,6 +109,59 @@ func TestGenerateRenamesParamCollidingWithPaginationAll(t *testing.T) {
 		"pagination's flagAll keeps the canonical name")
 }
 
+// TestGenerateRenamesParamCollidingWithAsyncWait covers the async-reserved-name
+// path. Async-job endpoints emit `var flagWait`, `var flagWaitTimeout`, and
+// `var flagWaitInterval` from the IsAsync branch in command_endpoint.go.tmpl;
+// a user param literally named `wait` (or `wait_timeout`, `wait_interval`)
+// would otherwise produce a duplicate `var flagWait` in the same function.
+//
+// Async detection requires a job-id-shaped response field plus a sibling status
+// endpoint, so the spec mirrors that contract.
+func TestGenerateRenamesParamCollidingWithAsyncWait(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("collide-async")
+	apiSpec.Types = map[string]spec.TypeDef{
+		"JobResp": {Fields: []spec.TypeField{
+			{Name: "job_id", Type: "string"},
+			{Name: "status", Type: "string"},
+		}},
+	}
+	apiSpec.Resources["videos"] = spec.Resource{
+		Description: "Videos",
+		Endpoints: map[string]spec.Endpoint{
+			"create": {
+				Method:      "POST",
+				Path:        "/videos",
+				Description: "Create a video render job",
+				Response:    spec.ResponseDef{Type: "object", Item: "JobResp"},
+				Params: []spec.Param{
+					{Name: "wait", Type: "string", Description: "Watermark text on the rendered video"},
+				},
+			},
+			"get": {
+				Method:      "GET",
+				Path:        "/videos/{id}",
+				Description: "Get one video",
+				Response:    spec.ResponseDef{Type: "object", Item: "JobResp"},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "collide-async-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	flagVars, flagBindings := parseFlagDeclarations(t,
+		filepath.Join(outputDir, "internal", "cli", "videos_create.go"))
+
+	assertNoDuplicates(t, flagVars,
+		"async's reserved flagWait must not collide with a user param named 'wait'")
+	assertNoDuplicates(t, flagBindings,
+		"--wait from async must not collide with --wait from a user param")
+	assert.Contains(t, flagVars, "flagWait",
+		"async's flagWait keeps the canonical name")
+}
+
 // parseFlagDeclarations returns the names of all `var flagXxx` declarations and
 // the literal flag names passed to cobra's *Var registrations.
 func parseFlagDeclarations(t *testing.T, path string) (vars, bindings []string) {
