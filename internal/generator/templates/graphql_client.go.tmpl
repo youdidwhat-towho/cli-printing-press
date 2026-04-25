@@ -29,6 +29,30 @@ type GraphQLError struct {
 	} `json:"extensions"`
 }
 
+// GraphQLAccessDeniedError is returned when every GraphQL error in a response
+// carries an access-policy extension code (FORBIDDEN, UNAUTHENTICATED,
+// PERMISSION_DENIED). Callers detect it via errors.As to distinguish access
+// denial from generic GraphQL errors.
+type GraphQLAccessDeniedError struct {
+	Codes    []string
+	Messages []string
+}
+
+func (e *GraphQLAccessDeniedError) Error() string {
+	return fmt.Sprintf("graphql access denied: %s", strings.Join(e.Messages, "; "))
+}
+
+// isGraphQLAccessDenialCode reports whether code is a recognized access-denial
+// extension code. The set follows the convention used by Apollo, GraphQL-Yoga,
+// and the GitHub/Shopify/Hasura ecosystems.
+func isGraphQLAccessDenialCode(code string) bool {
+	switch strings.ToUpper(code) {
+	case "FORBIDDEN", "UNAUTHENTICATED", "UNAUTHORIZED", "PERMISSION_DENIED":
+		return true
+	}
+	return false
+}
+
 // Query executes a GraphQL query via POST /graphql and returns the raw data payload.
 func (c *Client) Query(query string, variables map[string]any) (json.RawMessage, error) {
 	req := GraphQLRequest{Query: query, Variables: variables}
@@ -43,8 +67,19 @@ func (c *Client) Query(query string, variables map[string]any) (json.RawMessage,
 	}
 	if len(resp.Errors) > 0 {
 		msgs := make([]string, len(resp.Errors))
+		codes := make([]string, 0, len(resp.Errors))
+		allDenial := true
 		for i, e := range resp.Errors {
 			msgs[i] = e.Message
+			if e.Extensions.Code != "" {
+				codes = append(codes, e.Extensions.Code)
+			}
+			if !isGraphQLAccessDenialCode(e.Extensions.Code) {
+				allDenial = false
+			}
+		}
+		if allDenial && len(codes) > 0 {
+			return nil, &GraphQLAccessDeniedError{Codes: codes, Messages: msgs}
 		}
 		return nil, fmt.Errorf("graphql: %s", strings.Join(msgs, "; "))
 	}

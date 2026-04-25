@@ -23,6 +23,7 @@ type syncResult struct {
 	Resource string
 	Count    int
 	Err      error
+	Warn     error
 	Duration time.Duration
 }
 
@@ -40,7 +41,17 @@ func newSyncCmd(flags *rootFlags) *cobra.Command {
 		Short: "Sync API data to local SQLite for offline search and analysis",
 		Long: `Sync data from the API into a local SQLite database. Supports resumable
 incremental sync (only fetches new data since last sync) and full resync.
-Once synced, use the 'search' command for instant full-text search.`,
+Once synced, use the 'search' command for instant full-text search.
+
+Exit codes & warnings:
+  Resources the API denies access to (HTTP 403, HTTP 400 with an
+  access-policy body, or GraphQL errors carrying FORBIDDEN /
+  UNAUTHENTICATED / PERMISSION_DENIED extensions) are reported as
+  warnings rather than failing the run. In --json mode each is emitted
+  as a {"event":"sync_warning",...} line carrying status, reason, and
+  message fields, and a final {"event":"sync_summary",...} aggregates
+  the run. The command exits non-zero only when every selected
+  resource was access-denied or any resource hit a hard error.`,
 		Example: `  # Sync all resources
   {{.Name}}-pp-cli sync
 
@@ -146,26 +157,47 @@ Once synced, use the 'search' command for instant full-text search.`,
 
 			var totalSynced int
 			var errCount int
+			var warnCount int
+			var successCount int
 			for res := range results {
 				if res.Err != nil {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: error: %v\n", res.Resource, res.Err)
 					}
 					errCount++
+				} else if res.Warn != nil {
+					if humanFriendly {
+						fmt.Fprintf(os.Stderr, "  %s: warning: %v\n", res.Resource, res.Warn)
+					}
+					warnCount++
 				} else {
 					if humanFriendly {
 						fmt.Fprintf(os.Stderr, "  %s: %d synced (done)\n", res.Resource, res.Count)
 					}
 					totalSynced += res.Count
+					successCount++
 				}
 			}
 
 			elapsed := time.Since(started)
-			fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%.1fs)\n",
-				totalSynced, len(resources), elapsed.Seconds())
+			totalResources := successCount + warnCount + errCount
+			if !humanFriendly {
+				fmt.Fprintf(os.Stderr, `{"event":"sync_summary","total_records":%d,"resources":%d,"success":%d,"warned":%d,"errored":%d,"duration_ms":%d}`+"\n",
+					totalSynced, totalResources, successCount, warnCount, errCount, elapsed.Milliseconds())
+			}
+			if warnCount > 0 {
+				fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%d warned, %.1fs)\n",
+					totalSynced, totalResources, warnCount, elapsed.Seconds())
+			} else {
+				fmt.Fprintf(os.Stderr, "Sync complete: %d records across %d resources (%.1fs)\n",
+					totalSynced, totalResources, elapsed.Seconds())
+			}
 
 			if errCount > 0 {
 				return fmt.Errorf("%d resource(s) failed to sync", errCount)
+			}
+			if warnCount > 0 && successCount == 0 {
+				return fmt.Errorf("%d resource(s) skipped due to insufficient access", warnCount)
 			}
 			return nil
 		},
@@ -237,6 +269,13 @@ func syncResource(c *client.Client, db *store.Store, resource, sinceTS string, f
 
 		data, err := c.Query(def.Query, variables)
 		if err != nil {
+			if w, ok := isSyncAccessWarning(err); ok {
+				if !humanFriendly {
+					fmt.Fprintf(os.Stderr, `{"event":"sync_warning","resource":"%s","status":%d,"reason":"%s","message":"%s"}`+"\n",
+						resource, w.Status, w.Reason, strings.ReplaceAll(w.Message, `"`, `\"`))
+				}
+				return syncResult{Resource: resource, Count: totalCount, Warn: fmt.Errorf("skipped %s: %s", resource, w.Reason), Duration: time.Since(started)}
+			}
 			if !humanFriendly {
 				fmt.Fprintf(os.Stderr, `{"event":"sync_error","resource":"%s","error":"%s"}`+"\n", resource, strings.ReplaceAll(err.Error(), `"`, `\"`))
 			}

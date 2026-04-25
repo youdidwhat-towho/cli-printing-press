@@ -216,8 +216,9 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"graphqlFieldSelection": func(typeName string, types map[string]spec.TypeDef) []string {
 			return graphqlFieldSelection(typeName, types)
 		},
-		"backtick": func() string { return "`" },
-		"kebab":    toKebab,
+		"isGraphQL": isGraphQLSpec,
+		"backtick":  func() string { return "`" },
+		"kebab":     toKebab,
 		"humanName": func(s string) string {
 			// "steam-web" → "Steam Web", "notion" → "Notion"
 			return cases.Title(language.English).String(strings.ReplaceAll(s, "-", " "))

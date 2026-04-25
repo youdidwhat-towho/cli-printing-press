@@ -3023,6 +3023,151 @@ func TestGenerateDependentSyncReservedWordCompiles(t *testing.T) {
 	runGoCommand(t, outputDir, "test", "./internal/store")
 }
 
+func TestGeneratedSyncTreatsAccessDeniedAsWarning(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := &spec.APISpec{
+		Name:    "metasync",
+		Version: "0.1.0",
+		BaseURL: "https://graph.example.com",
+		Auth: spec.AuthConfig{
+			Type:    "bearer_token",
+			Header:  "Authorization",
+			EnvVars: []string{"METASYNC_TOKEN"},
+		},
+		Config: spec.ConfigSpec{
+			Format: "toml",
+			Path:   "~/.config/metasync-pp-cli/config.toml",
+		},
+		Resources: map[string]spec.Resource{
+			"accounts": {
+				Description: "Manage accounts",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {
+						Method:      "GET",
+						Path:        "/me/adaccounts",
+						Description: "List accounts",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+			"targeting": {
+				Description: "Manage targeting",
+				Endpoints: map[string]spec.Endpoint{
+					"search": {
+						Method:      "GET",
+						Path:        "/search",
+						Description: "Search targeting",
+						Response:    spec.ResponseDef{Type: "array"},
+						Pagination:  &spec.Pagination{CursorParam: "after", LimitParam: "limit"},
+					},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), naming.CLI(apiSpec.Name))
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	syncGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "sync.go"))
+	require.NoError(t, err)
+	syncContent := string(syncGo)
+
+	// Sync emits the structured warn event and routes to the warn-aware exit branch.
+	assert.Contains(t, syncContent, `Warn     error`)
+	assert.Contains(t, syncContent, `{"event":"sync_warning"`)
+	assert.Contains(t, syncContent, `"status":%d,"reason":"%s"`)
+	assert.Contains(t, syncContent, `{"event":"sync_summary"`)
+	assert.Contains(t, syncContent, `Sync complete: %d records across %d resources (%d warned, %.1fs)`)
+	assert.Contains(t, syncContent, `successCount == 0`)
+	assert.Contains(t, syncContent, `skipped due to insufficient access`)
+	assert.Contains(t, syncContent, `return nil`)
+	// The classifier moved to helpers.go; sync.go must call into it, not redefine it.
+	assert.Contains(t, syncContent, `isSyncAccessWarning(err)`)
+	assert.NotContains(t, syncContent, `func isSyncAccessWarning`)
+	assert.NotContains(t, syncContent, `func looksLikeSyncAccessDenial`)
+	// AGENTS.md: do not hardcode one API into reusable machine artifacts. The
+	// pre-fix patch leaked Meta-specific brand names into every printed CLI;
+	// guard against regression.
+	assert.NotContains(t, syncContent, `"workplace"`)
+
+	helpersGo, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "helpers.go"))
+	require.NoError(t, err)
+	helpersContent := string(helpersGo)
+	assert.Contains(t, helpersContent, `func isSyncAccessWarning(err error) (*accessWarning, bool)`)
+	assert.Contains(t, helpersContent, `func looksLikeAccessDenial(body string) bool`)
+	assert.Contains(t, helpersContent, `*client.APIError`)
+	assert.Contains(t, helpersContent, `errors.As`)
+	assert.NotContains(t, helpersContent, `"workplace"`)
+
+	// Build to catch template-syntax / import errors that substring assertions miss.
+	runGoCommand(t, outputDir, "mod", "tidy")
+	runGoCommand(t, outputDir, "build", "./...")
+
+	// Inject a behavioral test that exercises isSyncAccessWarning against real
+	// *client.APIError values plus the false-positive vectors flagged in code
+	// review (path containing "auth", body "validation failed: token required",
+	// "insufficient_funds", HTTP 500). This catches regressions where the helper
+	// gets stubbed to "return nil, true" or its negative cases stop holding.
+	behaviorTest := `package cli
+
+import (
+	"errors"
+	"fmt"
+	"testing"
+
+	"metasync-pp-cli/internal/client"
+)
+
+func TestIsSyncAccessWarningClassification(t *testing.T) {
+	cases := []struct {
+		name       string
+		err        error
+		wantOK     bool
+		wantStatus int
+		wantReason string
+	}{
+		{"nil error", nil, false, 0, ""},
+		{"403 forbidden", &client.APIError{Method: "GET", Path: "/me/ads", StatusCode: 403, Body: "forbidden: missing scope"}, true, 403, "forbidden"},
+		{"400 with insufficient scope", &client.APIError{Method: "GET", Path: "/search", StatusCode: 400, Body: "(#27) insufficient scope to call this method"}, true, 400, "insufficient_access"},
+		{"400 with permission denied", &client.APIError{Method: "GET", Path: "/foo", StatusCode: 400, Body: "permission denied for resource"}, true, 400, "insufficient_access"},
+		{"400 with unauthorized", &client.APIError{Method: "GET", Path: "/foo", StatusCode: 400, Body: "unauthorized"}, true, 400, "insufficient_access"},
+		// Negative cases — these MUST NOT classify as access warnings.
+		{"401 token expired (whole-CLI re-auth, not per-resource ACL)", &client.APIError{Method: "GET", Path: "/foo", StatusCode: 401, Body: "token expired"}, false, 0, ""},
+		{"500 server error", &client.APIError{Method: "GET", Path: "/foo", StatusCode: 500, Body: "internal error"}, false, 0, ""},
+		{"400 validation: missing token field", &client.APIError{Method: "GET", Path: "/foo", StatusCode: 400, Body: "validation failed: token field is required"}, false, 0, ""},
+		{"400 billing: insufficient_funds", &client.APIError{Method: "POST", Path: "/charges", StatusCode: 400, Body: "{\"error\":\"insufficient_funds\"}"}, false, 0, ""},
+		{"400 with pagination_token in body", &client.APIError{Method: "GET", Path: "/foo", StatusCode: 400, Body: "invalid pagination_token: malformed cursor"}, false, 0, ""},
+		{"400 path /authors with no body keyword", &client.APIError{Method: "GET", Path: "/authors/123", StatusCode: 400, Body: "id not found"}, false, 0, ""},
+		{"plain Go error", errors.New("connection refused"), false, 0, ""},
+		{"wrapped 403 still detected via errors.As", fmt.Errorf("fetching foo: %w", &client.APIError{Method: "GET", Path: "/foo", StatusCode: 403, Body: "forbidden"}), true, 403, "forbidden"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			w, ok := isSyncAccessWarning(tc.err)
+			if ok != tc.wantOK {
+				t.Fatalf("ok = %v, want %v (err=%v)", ok, tc.wantOK, tc.err)
+			}
+			if !ok {
+				return
+			}
+			if w.Status != tc.wantStatus {
+				t.Errorf("status = %d, want %d", w.Status, tc.wantStatus)
+			}
+			if w.Reason != tc.wantReason {
+				t.Errorf("reason = %q, want %q", w.Reason, tc.wantReason)
+			}
+		})
+	}
+}
+`
+	testPath := filepath.Join(outputDir, "internal", "cli", "sync_classify_test.go")
+	require.NoError(t, os.WriteFile(testPath, []byte(behaviorTest), 0o644))
+	runGoCommand(t, outputDir, "test", "./internal/cli", "-run", "TestIsSyncAccessWarningClassification")
+}
+
 func TestGenerateGraphQLCompiles(t *testing.T) {
 	t.Parallel()
 
