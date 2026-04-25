@@ -131,6 +131,9 @@ func ParseLenient(data []byte) (*spec.APISpec, error) {
 }
 
 func parse(data []byte, lenient bool) (*spec.APISpec, error) {
+	if normalized, err := normalizeSpecData(data); err == nil {
+		data = normalized
+	}
 	loader := openapi3.NewLoader()
 	loader.IsExternalRefsAllowed = lenient
 	doc, err := loader.LoadFromData(data)
