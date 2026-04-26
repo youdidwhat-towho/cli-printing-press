@@ -880,7 +880,7 @@ func archetypePlaybook(arch profiler.DomainArchetype) []PlaybookEntry {
 	}
 }
 
-func (g *Generator) Generate() error {
+func (g *Generator) prepareOutput() error {
 	dirs := []string{
 		filepath.Join("cmd", naming.CLI(g.Spec.Name)),
 		filepath.Join("internal", "cli"),
@@ -924,7 +924,10 @@ func (g *Generator) Generate() error {
 	// AsyncJobs detection so async endpoints reserve the wait identifiers.
 	g.dedupeFlagIdentifiers()
 
-	// Generate single files
+	return nil
+}
+
+func (g *Generator) renderSingleFiles() error {
 	singleFiles := map[string]string{
 		"main.go.tmpl":           filepath.Join("cmd", naming.CLI(g.Spec.Name), "main.go"),
 		"helpers.go.tmpl":        filepath.Join("internal", "cli", "helpers.go"),
@@ -982,6 +985,10 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	return nil
+}
+
+func (g *Generator) renderOptionalSupportFiles() error {
 	if g.Spec.HasHTMLExtraction() {
 		if err := g.renderTemplate("html_extract.go.tmpl", filepath.Join("internal", "cli", "html_extract.go"), g.Spec); err != nil {
 			return fmt.Errorf("rendering HTML extraction helper: %w", err)
@@ -1055,9 +1062,38 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	return nil
+}
+
+func (g *Generator) Generate() error {
+	if err := g.prepareOutput(); err != nil {
+		return err
+	}
+	if err := g.renderSingleFiles(); err != nil {
+		return err
+	}
+	if err := g.renderOptionalSupportFiles(); err != nil {
+		return err
+	}
+
+	promotedCommands, promotedResourceNames, promotedEndpointNames := buildPromotedCommandPlan(g.Spec)
+
+	if err := g.renderResourceCommands(promotedResourceNames, promotedEndpointNames); err != nil {
+		return err
+	}
+
+	if err := g.renderAuthFiles(); err != nil {
+		return err
+	}
+	if err := g.renderMCPEntrypoint(); err != nil {
+		return err
+	}
+	return g.renderVisionAndRootFiles(promotedCommands, promotedResourceNames)
+}
+
+func buildPromotedCommandPlan(apiSpec *spec.APISpec) ([]PromotedCommand, map[string]bool, map[string]string) {
 	// Compute promoted commands early — needed to determine Hidden flag on parent commands
-	promotedCommands := buildPromotedCommands(g.Spec)
-	hasPromoted := len(promotedCommands) > 0
+	promotedCommands := buildPromotedCommands(apiSpec)
 
 	// Build set of resource names that have promoted commands. Promoted commands
 	// replace the resource parent entirely — the promoted command wires sibling
@@ -1072,6 +1108,10 @@ func (g *Generator) Generate() error {
 		promotedEndpointNames[pc.ResourceName] = pc.EndpointName
 	}
 
+	return promotedCommands, promotedResourceNames, promotedEndpointNames
+}
+
+func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool, promotedEndpointNames map[string]string) error {
 	// Generate per-resource parent files + per-endpoint command files
 	// This produces more files (one per endpoint) which improves Breadth scoring
 	for name, resource := range g.Spec.Resources {
@@ -1194,6 +1234,10 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	return nil
+}
+
+func (g *Generator) renderAuthFiles() error {
 	// Always render auth command - use full OAuth2 template when authorization URL is present,
 	// browser cookie template for cookie-auth APIs, otherwise simple token-management template
 	authPath := filepath.Join("internal", "cli", "auth.go")
@@ -1225,6 +1269,10 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	return nil
+}
+
+func (g *Generator) renderMCPEntrypoint() error {
 	// MCP server: generate cmd/{name}-pp-mcp/ entry point and internal/mcp/ package
 	if g.VisionSet.MCP || true { // Always generate MCP for now
 		mcpDirs := []string{
@@ -1240,6 +1288,12 @@ func (g *Generator) Generate() error {
 			return fmt.Errorf("rendering MCP main: %w", err)
 		}
 	}
+
+	return nil
+}
+
+func (g *Generator) renderVisionAndRootFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool) error {
+	hasPromoted := len(promotedCommands) > 0
 
 	// Vision features: profile already computed in early profiling above
 	schema := BuildSchema(g.Spec)
@@ -1496,6 +1550,10 @@ func (g *Generator) Generate() error {
 		}
 	}
 
+	return g.renderRootProjectFiles(promotedCommands, promotedResourceNames, renderedWorkflowConstructors, renderedInsightConstructors)
+}
+
+func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, promotedResourceNames map[string]bool, renderedWorkflowConstructors, renderedInsightConstructors []string) error {
 	// Root --help Long surfaces ALL verified-built novel features — the
 	// whole point of this change is to stop making agents do discovery
 	// for novel capabilities. A count cap (earlier draft used 3) neuters

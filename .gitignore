@@ -2,6 +2,7 @@
 .cache/
 .gotmp/
 .claude/worktrees/
+/refactor/artifacts/
 /printing-press
 library/
 dist/
