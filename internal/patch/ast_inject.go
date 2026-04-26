@@ -3,6 +3,7 @@ package patch
 import (
 	"bytes"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/dave/dst"
@@ -150,55 +151,18 @@ func addImports(file *dst.File, pkgs ...string) bool {
 // PersistentFlags() registration inside Execute(). Skipped features are
 // omitted; if both profile and deliver are skipped, no flag is added.
 func addPersistentFlags(file *dst.File, opts injectOptions) bool {
-	changed := false
-	dst.Inspect(file, func(n dst.Node) bool {
-		fn, ok := n.(*dst.FuncDecl)
-		if !ok || fn.Name.Name != "Execute" {
-			return true
-		}
-		var newStmts []dst.Stmt
-		if !opts.skip("profile") {
-			// Idempotency: skip if --profile already registered.
-			already := false
-			for _, stmt := range fn.Body.List {
-				if persistentFlagsRegisters(stmt, "profile") {
-					already = true
-					break
-				}
-			}
-			if !already {
-				newStmts = append(newStmts, parseStmt(`rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile")`))
-			}
-		}
-		if !opts.skip("deliver") {
-			already := false
-			for _, stmt := range fn.Body.List {
-				if persistentFlagsRegisters(stmt, "deliver") {
-					already = true
-					break
-				}
-			}
-			if !already {
-				newStmts = append(newStmts, parseStmt(`rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")`))
-			}
-		}
-		if len(newStmts) == 0 {
-			return false
-		}
-		lastFlagIdx := -1
-		for i, stmt := range fn.Body.List {
-			if isPersistentFlagsCall(stmt) {
-				lastFlagIdx = i
-			}
-		}
-		if lastFlagIdx < 0 {
-			return false
-		}
-		fn.Body.List = append(fn.Body.List[:lastFlagIdx+1], append(newStmts, fn.Body.List[lastFlagIdx+1:]...)...)
-		changed = true
-		return false
-	})
-	return changed
+	return appendExecuteStatementsAfterLast(file, opts, []executeStatementInsertion{
+		{
+			feature: "profile",
+			stmt:    `rootCmd.PersistentFlags().StringVar(&flags.profileName, "profile", "", "Apply values from a saved profile")`,
+			exists:  func(stmt dst.Stmt) bool { return persistentFlagsRegisters(stmt, "profile") },
+		},
+		{
+			feature: "deliver",
+			stmt:    `rootCmd.PersistentFlags().StringVar(&flags.deliverSpec, "deliver", "", "Route output to a sink: stdout (default), file:<path>, webhook:<url>")`,
+			exists:  func(stmt dst.Stmt) bool { return persistentFlagsRegisters(stmt, "deliver") },
+		},
+	}, isPersistentFlagsCall)
 }
 
 // addPreRunBlocks inserts the deliver-setup and profile-lookup blocks at the
@@ -262,6 +226,27 @@ func addPreRunBlocks(file *dst.File, opts injectOptions) bool {
 // addCommands appends newProfileCmd and newFeedbackCmd AddCommand calls after
 // the last existing rootCmd.AddCommand entry. Skipped features are omitted.
 func addCommands(file *dst.File, opts injectOptions) bool {
+	return appendExecuteStatementsAfterLast(file, opts, []executeStatementInsertion{
+		{
+			feature: "profile",
+			stmt:    `rootCmd.AddCommand(newProfileCmd(&flags))`,
+			exists:  func(stmt dst.Stmt) bool { return rootAddsCommand(stmt, "newProfileCmd") },
+		},
+		{
+			feature: "feedback",
+			stmt:    `rootCmd.AddCommand(newFeedbackCmd(&flags))`,
+			exists:  func(stmt dst.Stmt) bool { return rootAddsCommand(stmt, "newFeedbackCmd") },
+		},
+	}, isRootAddCommand)
+}
+
+type executeStatementInsertion struct {
+	feature string
+	stmt    string
+	exists  func(dst.Stmt) bool
+}
+
+func appendExecuteStatementsAfterLast(file *dst.File, opts injectOptions, insertions []executeStatementInsertion, anchor func(dst.Stmt) bool) bool {
 	changed := false
 	dst.Inspect(file, func(n dst.Node) bool {
 		fn, ok := n.(*dst.FuncDecl)
@@ -269,43 +254,27 @@ func addCommands(file *dst.File, opts injectOptions) bool {
 			return true
 		}
 		var newStmts []dst.Stmt
-		if !opts.skip("profile") {
-			already := false
-			for _, stmt := range fn.Body.List {
-				if rootAddsCommand(stmt, "newProfileCmd") {
-					already = true
-					break
-				}
+		for _, insertion := range insertions {
+			if opts.skip(insertion.feature) {
+				continue
 			}
-			if !already {
-				newStmts = append(newStmts, parseStmt(`rootCmd.AddCommand(newProfileCmd(&flags))`))
-			}
-		}
-		if !opts.skip("feedback") {
-			already := false
-			for _, stmt := range fn.Body.List {
-				if rootAddsCommand(stmt, "newFeedbackCmd") {
-					already = true
-					break
-				}
-			}
-			if !already {
-				newStmts = append(newStmts, parseStmt(`rootCmd.AddCommand(newFeedbackCmd(&flags))`))
+			if !slices.ContainsFunc(fn.Body.List, insertion.exists) {
+				newStmts = append(newStmts, parseStmt(insertion.stmt))
 			}
 		}
 		if len(newStmts) == 0 {
 			return false
 		}
-		lastAddIdx := -1
+		lastAnchorIdx := -1
 		for i, stmt := range fn.Body.List {
-			if isRootAddCommand(stmt) {
-				lastAddIdx = i
+			if anchor(stmt) {
+				lastAnchorIdx = i
 			}
 		}
-		if lastAddIdx < 0 {
+		if lastAnchorIdx < 0 {
 			return false
 		}
-		fn.Body.List = append(fn.Body.List[:lastAddIdx+1], append(newStmts, fn.Body.List[lastAddIdx+1:]...)...)
+		fn.Body.List = append(fn.Body.List[:lastAnchorIdx+1], append(newStmts, fn.Body.List[lastAnchorIdx+1:]...)...)
 		changed = true
 		return false
 	})
