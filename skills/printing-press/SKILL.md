@@ -1723,7 +1723,7 @@ Do not rationalize skipping transcendence features because "the CLI already work
 
 ## Phase 4: Shipcheck
 
-Run one combined verification block.
+Run one combined verification block via the `shipcheck` umbrella, which runs all five legs (dogfood, verify, workflow-verify, verify-skill, scorecard) in canonical order, propagates exit codes, and prints a per-leg verdict summary. The umbrella is the canonical Phase 4 invocation; running the legs individually is supported but not recommended (operators have skipped legs that way and shipped broken CLIs).
 
 Before running shipcheck, update the lock heartbeat:
 ```bash
@@ -1731,12 +1731,15 @@ printing-press lock update --cli <api>-pp-cli --phase shipcheck
 ```
 
 ```bash
-printing-press dogfood         --dir "$CLI_WORK_DIR" --spec <same-spec> --research-dir "$API_RUN_DIR"
-printing-press verify          --dir "$CLI_WORK_DIR" --spec <same-spec> --fix
-printing-press workflow-verify --dir "$CLI_WORK_DIR"
-printing-press verify-skill    --dir "$CLI_WORK_DIR"
-printing-press scorecard       --dir "$CLI_WORK_DIR" --spec <same-spec>
+printing-press shipcheck \
+  --dir "$CLI_WORK_DIR" \
+  --spec <same-spec> \
+  --research-dir "$API_RUN_DIR"
 ```
+
+The umbrella defaults to `verify --fix` (auto-repair common failures) and `scorecard --live-check` (sample novel-feature output against real targets). Use `--no-fix` for a read-only pass, `--no-live-check` to skip live sampling, or `--json` for a structured envelope (suppresses per-leg output for clean piping). Pass `--api-key` / `--env-var` through to verify when live testing needs a credential, or `--strict` to make verify-skill treat likely-false-positive findings as failures.
+
+If a leg fails, re-run that one leg standalone (e.g., `printing-press verify-skill --dir <CLI_WORK_DIR>`) for focused iteration; once it passes, re-run the full `shipcheck` umbrella to confirm no regression in the others.
 
 Interpretation:
 - `dogfood` catches dead flags, dead helpers, invalid paths, example drift, broken data wiring, command tree/config field wiring bugs, and novel features that were planned but not built
@@ -1773,7 +1776,8 @@ for the Phase 4 fix delegation pattern.
 When `CODEX_MODE` is false, fix bugs directly.
 <!-- CODEX_PHASE4_END -->
 
-Ship threshold:
+Ship threshold (the umbrella's verdict is the canonical signal — all of these must hold for `shipcheck` to exit 0):
+- `shipcheck` exits 0. The umbrella's per-leg summary table shows every leg PASS. A non-zero exit is a fix-before-ship blocker, period — do not ship if the umbrella is red.
 - `verify` verdict is `PASS` or high `WARN` with 0 critical failures
 - `dogfood` no longer fails because of spec parsing, binary path, or skipped examples
 - `dogfood` wiring checks pass (no unregistered commands, no config field mismatches)
