@@ -136,64 +136,19 @@ func newGenerateCmd() *cobra.Command {
 				if err != nil {
 					return &ExitError{Code: ExitSpecError, Err: fmt.Errorf("parsing generated spec: %w", err)}
 				}
-				if specSource != "" {
-					normalized, err := normalizeSpecSource(specSource)
-					if err != nil {
-						return &ExitError{Code: ExitInputError, Err: err}
-					}
-					parsed.SpecSource = normalized
-				} else {
-					parsed.SpecSource = "docs"
-				}
-				if clientPattern != "" {
-					switch clientPattern {
-					case "rest", "proxy-envelope":
-						parsed.ClientPattern = clientPattern
-					default:
-						return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--client-pattern must be one of: rest, proxy-envelope (got %q)", clientPattern)}
-					}
-				}
-				if httpTransport != "" {
-					normalized, err := normalizeHTTPTransport(httpTransport)
-					if err != nil {
-						return &ExitError{Code: ExitInputError, Err: err}
-					}
-					parsed.HTTPTransport = normalized
+				if err := applyGenerateSpecFlags(parsed, specSource, "docs", clientPattern, httpTransport); err != nil {
+					return err
 				}
 
-				explicitOutput := outputDir != ""
-				if outputDir == "" {
-					outputDir = pipeline.DefaultOutputDir(parsed.Name)
-				}
-				absOut, err := filepath.Abs(outputDir)
+				absOut, _, err := resolveGenerateOutputDir(outputDir, parsed.Name, force, true)
 				if err != nil {
-					return fmt.Errorf("resolving output path: %w", err)
-				}
-				absOut, err = claimOrForce(absOut, force, explicitOutput)
-				if err != nil {
-					return &ExitError{Code: ExitInputError, Err: err}
+					return err
 				}
 
-				enrichSpecFromCatalog(parsed)
-				gen := generator.New(parsed, absOut)
-				novelFeatures := loadResearchSources(gen, researchDir)
-				trafficAnalysis, err := loadTrafficAnalysisForGenerate(trafficAnalysisPath, nil, parsed.SpecSource)
+				novelFeatures, polished, err := runGenerateProject(parsed, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath})
 				if err != nil {
-					return &ExitError{Code: ExitInputError, Err: err}
+					return err
 				}
-				applyHTTPTransportDefault(parsed, trafficAnalysis)
-				browsersniff.ApplyReachabilityDefaults(parsed, trafficAnalysis)
-				gen.TrafficAnalysis = trafficAnalysis
-				if err := gen.Generate(); err != nil {
-					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
-				}
-				if validate {
-					if err := gen.Validate(); err != nil {
-						return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
-					}
-				}
-
-				polished := runGeneratePolishPass(polish, parsed.Name, absOut)
 
 				if err := pipeline.WriteManifestForGenerate(pipeline.GenerateManifestParams{
 					APIName:       parsed.Name,
@@ -243,17 +198,9 @@ func newGenerateCmd() *cobra.Command {
 					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("plan contains no command definitions")}
 				}
 
-				explicitOutput := outputDir != ""
-				if outputDir == "" {
-					outputDir = pipeline.DefaultOutputDir(planSpec.CLIName)
-				}
-				absOut, err := filepath.Abs(outputDir)
+				absOut, _, err := resolveGenerateOutputDir(outputDir, planSpec.CLIName, force, true)
 				if err != nil {
-					return fmt.Errorf("resolving output path: %w", err)
-				}
-				absOut, err = claimOrForce(absOut, force, explicitOutput)
-				if err != nil {
-					return &ExitError{Code: ExitInputError, Err: err}
+					return err
 				}
 
 				if err := generator.GenerateFromPlan(planSpec, absOut); err != nil {
@@ -327,69 +274,22 @@ func newGenerateCmd() *cobra.Command {
 				apiSpec = mergeSpecs(specs, cliName)
 			}
 
-			if specSource != "" {
-				normalized, err := normalizeSpecSource(specSource)
-				if err != nil {
-					return &ExitError{Code: ExitInputError, Err: err}
-				}
-				apiSpec.SpecSource = normalized
-			}
-			if clientPattern != "" {
-				switch clientPattern {
-				case "rest", "proxy-envelope":
-					apiSpec.ClientPattern = clientPattern
-				default:
-					return &ExitError{Code: ExitInputError, Err: fmt.Errorf("--client-pattern must be one of: rest, proxy-envelope (got %q)", clientPattern)}
-				}
-			}
-			if httpTransport != "" {
-				normalized, err := normalizeHTTPTransport(httpTransport)
-				if err != nil {
-					return &ExitError{Code: ExitInputError, Err: err}
-				}
-				apiSpec.HTTPTransport = normalized
+			if err := applyGenerateSpecFlags(apiSpec, specSource, "", clientPattern, httpTransport); err != nil {
+				return err
 			}
 
-			explicitOutput := outputDir != ""
-			if outputDir == "" {
-				outputDir = pipeline.DefaultOutputDir(apiSpec.Name)
-			}
-
-			absOut, err := filepath.Abs(outputDir)
+			absOut, explicitOutput, err := resolveGenerateOutputDir(outputDir, apiSpec.Name, force, !dryRun)
 			if err != nil {
-				return fmt.Errorf("resolving output path: %w", err)
+				return err
 			}
 			if dryRun {
 				return printDryRun(apiSpec, absOut, specFiles)
 			}
-			absOut, err = claimOrForce(absOut, force, explicitOutput)
-			if err != nil {
-				return &ExitError{Code: ExitInputError, Err: err}
-			}
 
-			enrichSpecFromCatalog(apiSpec)
-			gen := generator.New(apiSpec, absOut)
-			novelFeatures := loadResearchSources(gen, researchDir)
-			trafficAnalysis, err := loadTrafficAnalysisForGenerate(trafficAnalysisPath, specFiles, apiSpec.SpecSource)
+			novelFeatures, polished, err := runGenerateProject(apiSpec, absOut, generateProjectOptions{validate: validate, polish: polish, researchDir: researchDir, trafficAnalysisPath: trafficAnalysisPath, specFiles: specFiles, rejectUnshippablePageContextTraffic: true})
 			if err != nil {
-				return &ExitError{Code: ExitInputError, Err: err}
+				return err
 			}
-			if trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
-				return &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
-			}
-			applyHTTPTransportDefault(apiSpec, trafficAnalysis)
-			browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
-			gen.TrafficAnalysis = trafficAnalysis
-			if err := gen.Generate(); err != nil {
-				return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
-			}
-			if validate {
-				if err := gen.Validate(); err != nil {
-					return &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
-				}
-			}
-
-			polished := runGeneratePolishPass(polish, apiSpec.Name, absOut)
 
 			// When --output was not explicitly supplied, normalize the output
 			// directory to the spec-derived name so default-path runs land in the
@@ -496,6 +396,67 @@ func runGeneratePolishPass(enabled bool, apiName, outputDir string) bool {
 	return true
 }
 
+type generateProjectOptions struct {
+	validate                            bool
+	polish                              bool
+	researchDir                         string
+	trafficAnalysisPath                 string
+	specFiles                           []string
+	rejectUnshippablePageContextTraffic bool
+}
+
+func runGenerateProject(apiSpec *spec.APISpec, absOut string, opts generateProjectOptions) ([]pipeline.NovelFeatureManifest, bool, error) {
+	enrichSpecFromCatalog(apiSpec)
+	gen := generator.New(apiSpec, absOut)
+	novelFeatures := loadResearchSources(gen, opts.researchDir)
+	trafficAnalysis, err := loadTrafficAnalysisForGenerate(opts.trafficAnalysisPath, opts.specFiles, apiSpec.SpecSource)
+	if err != nil {
+		return nil, false, &ExitError{Code: ExitInputError, Err: err}
+	}
+	if opts.rejectUnshippablePageContextTraffic && trafficAnalysisRequiresUnshippablePageContext(trafficAnalysis) {
+		return nil, false, &ExitError{Code: ExitInputError, Err: fmt.Errorf("traffic analysis says this target requires live browser page-context execution; persistent browser transport is not a shippable printed CLI runtime. Re-run discovery for a Surf/direct/browser-clearance replayable surface instead")}
+	}
+	applyHTTPTransportDefault(apiSpec, trafficAnalysis)
+	browsersniff.ApplyReachabilityDefaults(apiSpec, trafficAnalysis)
+	gen.TrafficAnalysis = trafficAnalysis
+	if err := gen.Generate(); err != nil {
+		return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("generating project: %w", err)}
+	}
+	if opts.validate {
+		if err := gen.Validate(); err != nil {
+			return nil, false, &ExitError{Code: ExitGenerationError, Err: fmt.Errorf("validating generated project: %w", err)}
+		}
+	}
+	return novelFeatures, runGeneratePolishPass(opts.polish, apiSpec.Name, absOut), nil
+}
+
+func applyGenerateSpecFlags(apiSpec *spec.APISpec, specSource, defaultSpecSource, clientPattern, httpTransport string) error {
+	if specSource != "" {
+		normalized, err := normalizeSpecSource(specSource)
+		if err != nil {
+			return &ExitError{Code: ExitInputError, Err: err}
+		}
+		apiSpec.SpecSource = normalized
+	} else if defaultSpecSource != "" {
+		apiSpec.SpecSource = defaultSpecSource
+	}
+	if clientPattern != "" {
+		normalized, err := normalizeClientPattern(clientPattern)
+		if err != nil {
+			return &ExitError{Code: ExitInputError, Err: err}
+		}
+		apiSpec.ClientPattern = normalized
+	}
+	if httpTransport != "" {
+		normalized, err := normalizeHTTPTransport(httpTransport)
+		if err != nil {
+			return &ExitError{Code: ExitInputError, Err: err}
+		}
+		apiSpec.HTTPTransport = normalized
+	}
+	return nil
+}
+
 func normalizeSpecSource(value string) (string, error) {
 	switch value {
 	case "", "official", "community", "sniffed", "docs":
@@ -507,6 +468,15 @@ func normalizeSpecSource(value string) (string, error) {
 	}
 }
 
+func normalizeClientPattern(value string) (string, error) {
+	switch value {
+	case "", "rest", "proxy-envelope":
+		return value, nil
+	default:
+		return "", fmt.Errorf("--client-pattern must be one of: rest, proxy-envelope (got %q)", value)
+	}
+}
+
 func normalizeHTTPTransport(value string) (string, error) {
 	switch value {
 	case "", spec.HTTPTransportStandard, spec.HTTPTransportBrowserChrome, spec.HTTPTransportBrowserChromeH3:
@@ -514,6 +484,25 @@ func normalizeHTTPTransport(value string) (string, error) {
 	default:
 		return "", fmt.Errorf("--transport must be one of: standard, browser-chrome, browser-chrome-h3 (got %q)", value)
 	}
+}
+
+func resolveGenerateOutputDir(outputDir, cliName string, force bool, claim bool) (string, bool, error) {
+	explicitOutput := outputDir != ""
+	if outputDir == "" {
+		outputDir = pipeline.DefaultOutputDir(cliName)
+	}
+	absOut, err := filepath.Abs(outputDir)
+	if err != nil {
+		return "", false, fmt.Errorf("resolving output path: %w", err)
+	}
+	if !claim {
+		return absOut, explicitOutput, nil
+	}
+	absOut, err = claimOrForce(absOut, force, explicitOutput)
+	if err != nil {
+		return "", false, &ExitError{Code: ExitInputError, Err: err}
+	}
+	return absOut, explicitOutput, nil
 }
 
 func applyHTTPTransportDefault(apiSpec *spec.APISpec, analysis *browsersniff.TrafficAnalysis) {
