@@ -1260,6 +1260,38 @@ func wrapWithProvenance(data json.RawMessage, prov DataProvenance) (json.RawMess
 	return json.Marshal(envelope)
 }
 
+{{- if .HasClientLimit}}
+
+// truncateJSONArray returns a JSON array containing at most n elements
+// from the input. When n <= 0, when the input isn't a JSON array, or
+// when the array is already at-or-below the limit, the input is
+// returned unchanged.
+//
+// Used by list-endpoint commands whose API ignores the ?limit=N query
+// param (e.g. Firebase-style endpoints that return the full collection
+// regardless of the param). The truncation is idempotent — calling it
+// when the API already honored the limit is a no-op. The generator
+// only emits the call when the spec declares a `limit` param without a
+// Pagination block, so paginated APIs are unaffected.
+func truncateJSONArray(data json.RawMessage, n int) json.RawMessage {
+	if n <= 0 {
+		return data
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(data, &arr); err != nil {
+		return data
+	}
+	if len(arr) <= n {
+		return data
+	}
+	out, err := json.Marshal(arr[:n])
+	if err != nil {
+		return data
+	}
+	return out
+}
+{{- end}}
+
 // defaultDBPath returns the canonical path for the local SQLite database.
 func defaultDBPath(name string) string {
 	home, _ := os.UserHomeDir()

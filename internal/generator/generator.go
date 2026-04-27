@@ -260,11 +260,20 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		},
 		"jsonStringParam":    isJSONStringParam,
 		"jsonEnumSuggestion": jsonEnumSuggestion,
-		"envName":            naming.EnvPrefix,
-		"safeName":           safeSQLName,
-		"isBackfillColumn":   isStoreBackfillColumn,
-		"hasBackfillColumns": hasStoreBackfillColumns,
-		"backfillDecl":       storeBackfillDecl,
+		// endpointNeedsClientLimit reports whether a list endpoint needs
+		// client-side truncation. True when the endpoint has a `limit`-named
+		// param AND no Pagination block — the spec author asked for a
+		// limit flag, but didn't declare a server-side paginator. Many
+		// APIs (Firebase, file-backed JSON dumps, RSS feeds) accept a
+		// `?limit=N` query param without honoring it; truncating client-
+		// side means the user-facing --limit flag works regardless.
+		// Surfaced by hackernews retro #350 finding F6.
+		"endpointNeedsClientLimit": endpointNeedsClientLimit,
+		"envName":                  naming.EnvPrefix,
+		"safeName":                 safeSQLName,
+		"isBackfillColumn":         isStoreBackfillColumn,
+		"hasBackfillColumns":       hasStoreBackfillColumns,
+		"backfillDecl":             storeBackfillDecl,
 		"safeNameSuffix": func(name, suffix string) string {
 			return safeSQLName(name + suffix)
 		},
@@ -489,6 +498,7 @@ type HelperFlags struct {
 	HasPathParams      bool // spec has path parameters → emit replacePathParam
 	HasMultiPositional bool // spec has endpoints with 2+ positional params → emit usageErr
 	HasDataLayer       bool // CLI has a local store (sync/search) → emit provenance helpers
+	HasClientLimit     bool // at least one endpoint needs client-side limit truncation → emit truncateJSONArray
 }
 
 // computeHelperFlags scans the spec's resources to determine which helpers are needed.
@@ -498,6 +508,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 		for _, e := range r.Endpoints {
 			if strings.EqualFold(e.Method, "DELETE") {
 				flags.HasDelete = true
+			}
+			if endpointNeedsClientLimit(e) {
+				flags.HasClientLimit = true
 			}
 			positionalCount := 0
 			for _, p := range e.Params {
@@ -514,6 +527,9 @@ func computeHelperFlags(s *spec.APISpec) HelperFlags {
 			for _, e := range sub.Endpoints {
 				if strings.EqualFold(e.Method, "DELETE") {
 					flags.HasDelete = true
+				}
+				if endpointNeedsClientLimit(e) {
+					flags.HasClientLimit = true
 				}
 				positionalCount := 0
 				for _, p := range e.Params {
@@ -2129,6 +2145,40 @@ func defaultValForParam(p spec.Param) string {
 type jsonFlagSuggestion struct {
 	FlagName string
 	Values   []string
+}
+
+// endpointNeedsClientLimit reports whether a list endpoint needs
+// client-side response truncation. True when:
+//   - method is GET (only read endpoints need truncation)
+//   - the endpoint has a non-positional `limit` param (the user-facing
+//     --limit flag exists)
+//   - no Pagination block is declared (the spec author hasn't told us
+//     the API actually paginates)
+//
+// When all three conditions hold, the generator emits a
+// truncateJSONArray call after the API response returns so --limit N
+// is honored even when the API ignores ?limit=N. APIs like Firebase
+// and various file-backed JSON endpoints accept the query param
+// without applying it server-side; the truncation is harmless when
+// the API DID return only N items already (idempotent).
+//
+// Surfaced by hackernews retro #350 finding F6.
+func endpointNeedsClientLimit(endpoint spec.Endpoint) bool {
+	if !strings.EqualFold(strings.TrimSpace(endpoint.Method), "GET") {
+		return false
+	}
+	if endpoint.Pagination != nil {
+		return false
+	}
+	for _, p := range endpoint.Params {
+		if p.Positional || p.PathParam {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(p.Name), "limit") {
+			return true
+		}
+	}
+	return false
 }
 
 func isJSONStringParam(p spec.Param) bool {

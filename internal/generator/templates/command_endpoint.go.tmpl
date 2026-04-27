@@ -345,6 +345,15 @@ func new{{camel .FuncPrefix}}{{camel .EndpointName}}Cmd(flags *rootFlags) *cobra
 				return classifyAPIError(err)
 			}
 {{- end}}
+{{- if endpointNeedsClientLimit .Endpoint}}
+			// The API doesn't declare a paginator but accepts a limit
+			// query param. Some APIs (Firebase, file-backed JSON dumps,
+			// RSS feeds) silently ignore ?limit=N and return the full
+			// collection — truncate client-side so --limit N is
+			// honored regardless. Idempotent when the API already
+			// returned <= N items.
+			data = truncateJSONArray(data, flagLimit)
+{{- end}}
 
 {{- if .Endpoint.UsesHTMLResponse}}
 			if !flags.dryRun {
