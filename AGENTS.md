@@ -45,9 +45,9 @@ go fmt ./...
 golangci-lint run ./...
 ```
 
-A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push hook runs `golangci-lint`. The same config (`.golangci.yml`: errcheck, govet, staticcheck, unused) runs in CI. To run lint manually: `golangci-lint run ./...`
+A pre-commit hook runs `gofmt -w` on staged Go files automatically. A pre-push hook runs `golangci-lint`. The same config (`.golangci.yml`: errcheck, govet, staticcheck, unused) runs in CI. Install hooks with `brew install lefthook && lefthook install --reset-hooks-path`; `--reset-hooks-path` clears stale local `core.hooksPath` settings that block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path. To run lint manually: `golangci-lint run ./...`
 
-**Always run `go fmt ./...` after writing Go code.** Use `go fmt`, not raw `gofmt` — `gofmt` doesn't accept Go package patterns, and `gofmt -w .` would walk into `testdata/golden/expected/` and rewrite frozen golden fixtures. `go fmt ./...` skips `testdata` and `vendor` by convention. Subagents and code generators often produce valid but unformatted Go. The pre-commit hook catches this for commits in the repo, but code written to external directories (e.g., `~/printing-press/library/`) must be formatted explicitly.
+**After writing Go code, format it with `go fmt ./...` before handing back work.** This is intentionally redundant with the pre-commit hook: `gofmt` is idempotent, and the hook is a safety net for commits while agents often stop before committing. Use `go fmt ./...` for repo-wide formatting and `gofmt -w path/to/file.go` only for explicit files. Do not run `gofmt -w ./...` — `gofmt` does not accept Go package patterns. Do not run `gofmt -w .` from the repo root — it can walk into `testdata/golden/expected/` and rewrite frozen golden fixtures. `go fmt ./...` formats package files and skips `testdata` and `vendor` by convention. Code written to external directories (e.g., `~/printing-press/library/`) must be formatted explicitly because repo hooks will not see it.
 
 **IMPORTANT: Always use relative paths for build output.** Never build to `/tmp` or any shared absolute path. Multiple worktrees run concurrently and will stomp on each other. Use `./printing-press` exactly as shown above.
 

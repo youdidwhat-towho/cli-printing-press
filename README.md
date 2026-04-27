@@ -454,7 +454,18 @@ go fmt ./...
 golangci-lint run ./...
 ```
 
-A pre-push lefthook hook runs `golangci-lint` on changed files; the same config (`.golangci.yml`) runs in CI. Install hooks with `brew install lefthook && lefthook install`. To test local skill changes, run `claude --plugin-dir .` so `/printing-press` loads from your working copy. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
+A pre-push lefthook hook runs `golangci-lint` on changed files; the same config (`.golangci.yml`) runs in CI.
+
+Install hooks with:
+
+```bash
+brew install lefthook
+lefthook install --reset-hooks-path
+```
+
+Use `--reset-hooks-path` so stale local `core.hooksPath` settings do not block hook sync. Avoid `lefthook install --force` unless intentionally overriding a custom hooks path.
+
+To test local skill changes, run `claude --plugin-dir .` so `/printing-press` loads from your working copy. See [AGENTS.md](AGENTS.md) for full conventions, glossary, and release flow.
 
 ### Golden Output Harness
 

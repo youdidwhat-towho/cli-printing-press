@@ -45,7 +45,7 @@ pre-push:
       run: |
         unformatted="$(git ls-files '*.go' ':!:testdata/golden/expected/**' | xargs gofmt -l)"
         test -z "$unformatted" || { printf '%s\n' "$unformatted"; exit 1; }
-      fail_text: "gofmt failed. Run 'gofmt -w .' to fix."
+      fail_text: "gofmt failed. Run 'go fmt ./...' to fix. Do not run 'gofmt -w .' from the repo root; it can rewrite golden fixtures."
     lint:
       glob: "*.go"
       run: golangci-lint run ./...
