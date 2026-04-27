@@ -101,6 +101,131 @@ func TestFirstCommandExampleHonorsPromotion(t *testing.T) {
 			resources: map[string]spec.Resource{},
 			want:      "",
 		},
+		{
+			// recipes has only one endpoint (get) so the resource is
+			// promoted: the cobra path is just "recipes <slug>", not
+			// "recipes get <slug>". Spec author's Param.Default for
+			// the positional wins over canonicalargs.
+			name: "single-endpoint promoted resource with positional spec default",
+			resources: map[string]spec.Resource{
+				"recipes": {
+					Endpoints: map[string]spec.Endpoint{
+						"get": {
+							Method: "GET",
+							Path:   "/recipes/{slug}",
+							Params: []spec.Param{
+								{Name: "slug", Positional: true, Default: "my-best-brownies"},
+							},
+						},
+					},
+				},
+			},
+			want: "recipes my-best-brownies",
+		},
+		{
+			// Two endpoints — no promotion — and `since` is a
+			// canonicalargs entry, so positional value comes from there.
+			name: "multi-endpoint resource positional falls through to canonicalargs",
+			resources: map[string]spec.Resource{
+				"changelog": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/changelog",
+							Params: []spec.Param{
+								{Name: "since", Positional: true},
+							},
+						},
+						"reset": {Method: "POST", Path: "/changelog/reset"},
+					},
+				},
+			},
+			want: "changelog list 2026-01-01",
+		},
+		{
+			// Two endpoints — no promotion. The positional has no spec
+			// default and no canonicalargs entry, so falls through to
+			// the mock-value catch-all. Mirrors the lookup chain in
+			// internal/pipeline/runtime_commands.go.
+			name: "multi-endpoint resource positional falls through to mock-value",
+			resources: map[string]spec.Resource{
+				"airports": {
+					Endpoints: map[string]spec.Endpoint{
+						"get": {
+							Method: "GET",
+							Path:   "/airports/{code}",
+							Params: []spec.Param{
+								{Name: "airport_code", Positional: true},
+							},
+						},
+						"create": {Method: "POST", Path: "/airports"},
+					},
+				},
+			},
+			want: "airports get mock-value",
+		},
+		{
+			// articles has two endpoints (browse-sub and list) so the
+			// resource is NOT promoted; example emits "articles browse-sub <pos1> <pos2>".
+			// list is selected over browse-sub because it's a preferred verb,
+			// so to test multi-positional we add a multi-positional list.
+			name: "multiple positionals are joined in declared order",
+			resources: map[string]spec.Resource{
+				"articles": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/articles/{vertical}/{sub}",
+							Params: []spec.Param{
+								{Name: "vertical", Positional: true},
+								{Name: "sub", Positional: true, Default: "weeknight"},
+							},
+						},
+						"create": {Method: "POST", Path: "/articles"},
+					},
+				},
+			},
+			want: "articles list mock-vertical weeknight",
+		},
+		{
+			// items has two endpoints — no promotion. No positional
+			// params on the chosen endpoint, so the helper emits the
+			// bare path; non-positional flag params don't appear.
+			name: "non-positional params do not pollute the example",
+			resources: map[string]spec.Resource{
+				"items": {
+					Endpoints: map[string]spec.Endpoint{
+						"list": {
+							Method: "GET",
+							Path:   "/items",
+							Params: []spec.Param{
+								{Name: "limit", Positional: false, Default: 25},
+								{Name: "cursor", Positional: false},
+							},
+						},
+						"create": {Method: "POST", Path: "/items"},
+					},
+				},
+			},
+			want: "items list",
+		},
+		{
+			name: "promoted single-endpoint resource keeps positionals",
+			resources: map[string]spec.Resource{
+				"feed": {
+					Endpoints: map[string]spec.Endpoint{
+						"get-on-this-day": {
+							Method: "GET",
+							Path:   "/feed/{date}",
+							Params: []spec.Param{
+								{Name: "date", Positional: true, Default: "2026-04-27"},
+							},
+						},
+					},
+				},
+			},
+			want: "feed 2026-04-27",
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

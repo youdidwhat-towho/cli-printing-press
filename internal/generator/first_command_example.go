@@ -1,23 +1,34 @@
 package generator
 
 import (
+	"fmt"
 	"sort"
+	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/canonicalargs"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 )
 
-// firstCommandExample returns a runnable "resource [endpoint]" path for docs
-// that need a concrete example. Read-only verbs (list, get, search, query)
-// are preferred to keep examples non-destructive. Returns empty when the
-// spec has no endpoints, so callers can skip the block rather than render
-// nonsense.
+// firstCommandExample returns a runnable "resource [endpoint] <pos1> <pos2>..."
+// invocation for docs that need a concrete example. Read-only verbs (list,
+// get, search, query) are preferred to keep examples non-destructive.
+// Returns empty when the spec has no endpoints, so callers can skip the
+// block rather than render nonsense.
 //
 // For single-endpoint resources that the generator promotes to top-level
-// commands, the returned path is just the resource name (the actual cobra
-// command path), not "resource endpoint" (the pre-promotion path). The
-// SKILL.md verifier in printing-press-library walks command references and
-// rejects pre-promotion paths because they don't exist in the shipped
-// internal/cli/*.go.
+// commands, the returned path starts with just the resource name (the
+// actual cobra command path), not "resource endpoint" (the pre-promotion
+// path). The SKILL.md verifier in printing-press-library walks command
+// references and rejects pre-promotion paths because they don't exist in
+// the shipped internal/cli/*.go.
+//
+// Positional values use the same lookup chain as verify mock-mode in
+// runtime_commands.go: spec.Param.Default → canonicalargs.Lookup →
+// "mock-value". Spec authors who set realistic defaults on positional
+// params get them surfaced in the SKILL example automatically; specs
+// without defaults fall through to the cross-domain registry, then to
+// the mock-value catch-all. This keeps SKILL examples honest enough that
+// verify-skill exits 0 on first generation.
 func firstCommandExample(resources map[string]spec.Resource) string {
 	var resNames []string
 	for name := range resources {
@@ -26,18 +37,22 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 	sort.Strings(resNames)
 	preferredVerbs := []string{"list", "get", "search", "query"}
 
-	pathFor := func(rName string, r spec.Resource, eName string) string {
-		if isPromotableSingleEndpoint(rName, r) {
-			return rName
+	pathFor := func(rName string, r spec.Resource, eName string, ep spec.Endpoint) string {
+		base := rName
+		if !isPromotableSingleEndpoint(rName, r) {
+			base = rName + " " + eName
 		}
-		return rName + " " + eName
+		if args := positionalArgsForExample(ep); args != "" {
+			return base + " " + args
+		}
+		return base
 	}
 
 	for _, rName := range resNames {
 		r := resources[rName]
 		for _, verb := range preferredVerbs {
-			if _, ok := r.Endpoints[verb]; ok {
-				return pathFor(rName, r, verb)
+			if ep, ok := r.Endpoints[verb]; ok {
+				return pathFor(rName, r, verb, ep)
 			}
 		}
 	}
@@ -45,10 +60,56 @@ func firstCommandExample(resources map[string]spec.Resource) string {
 		r := resources[rName]
 		eNames := sortedEndpointNames(r.Endpoints)
 		if len(eNames) > 0 {
-			return pathFor(rName, r, eNames[0])
+			return pathFor(rName, r, eNames[0], r.Endpoints[eNames[0]])
 		}
 	}
 	return ""
+}
+
+// positionalArgsForExample joins the endpoint's required positional
+// arguments into a single space-separated string suitable for splicing
+// into a docs example. Each value comes from skillExamplePositionalValue
+// (spec.Param.Default → canonicalargs → "mock-value"). Returns empty
+// when the endpoint declares no positional params, so the caller can
+// emit the bare command path.
+func positionalArgsForExample(ep spec.Endpoint) string {
+	var parts []string
+	for _, p := range ep.Params {
+		if !p.Positional {
+			continue
+		}
+		parts = append(parts, skillExamplePositionalValue(p))
+	}
+	return strings.Join(parts, " ")
+}
+
+// skillExamplePositionalValue resolves one positional param to the value
+// the SKILL/README example should display. Mirrors the verify mock-mode
+// lookup chain in internal/pipeline/runtime_commands.go so a spec's
+// Param.Default flows through to both verify dispatch and the docs the
+// generator emits.
+func skillExamplePositionalValue(p spec.Param) string {
+	if p.Default != nil {
+		if s := stringifyDefault(p.Default); s != "" {
+			return s
+		}
+	}
+	name := strings.ToLower(strings.TrimSpace(p.Name))
+	if v, ok := canonicalargs.Lookup(name); ok {
+		return v
+	}
+	return "mock-value"
+}
+
+func stringifyDefault(v any) string {
+	switch t := v.(type) {
+	case nil:
+		return ""
+	case string:
+		return t
+	default:
+		return fmt.Sprintf("%v", t)
+	}
 }
 
 // isPromotableSingleEndpoint mirrors buildPromotedCommands's promotion
