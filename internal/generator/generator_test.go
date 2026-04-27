@@ -2571,9 +2571,11 @@ func TestGenerate_UserAgentOverrideGatedByBrowserTransport(t *testing.T) {
 	browserClient, err := os.ReadFile(filepath.Join(browserDir, "internal", "client", "client.go"))
 	require.NoError(t, err)
 	assert.NotContains(t, string(browserClient), `req.Header.Set("User-Agent"`)
-	browserAuth, err := os.ReadFile(filepath.Join(browserDir, "internal", "cli", "auth.go"))
-	require.NoError(t, err)
-	assert.NotContains(t, string(browserAuth), "newAuthRefreshCmd")
+	// auth.go is not emitted for auth.type:none specs (see Generator.renderAuthFiles).
+	// Stronger assertion than the previous "no newAuthRefreshCmd in auth.go": there's
+	// no auth.go at all for no-auth CLIs.
+	_, err = os.Stat(filepath.Join(browserDir, "internal", "cli", "auth.go"))
+	assert.True(t, os.IsNotExist(err), "auth.go should not be emitted for auth.type:none specs")
 }
 
 func TestGenerateObjectBodyDefaultsAreParsedAsJSON(t *testing.T) {

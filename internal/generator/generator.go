@@ -1238,7 +1238,21 @@ func (g *Generator) renderResourceCommands(promotedResourceNames map[string]bool
 }
 
 func (g *Generator) renderAuthFiles() error {
-	// Always render auth command - use full OAuth2 template when authorization URL is present,
+	// Skip auth.go entirely when the spec declares auth.type:none AND no
+	// AuthorizationURL (OAuth) AND no GraphQL persisted-query refresh state.
+	// Public-data CLIs (no-auth recipe sites, weather feeds, score feeds) that
+	// shipped a generic auth set-token / status / logout subcommand were
+	// emitting dead UI -- the commands existed but did nothing useful, and
+	// agents that called them got no-ops. Now no auth.go is emitted; root.go
+	// gates the registration on the same condition. The scorecard's auth
+	// dimension exempts no-auth specs from the "no auth subcommand" deduction
+	// (see scoreAuth).
+	if g.Spec.Auth.Type == "none" &&
+		g.Spec.Auth.AuthorizationURL == "" &&
+		!g.hasTrafficAnalysisHint("graphql_persisted_query") {
+		return nil
+	}
+	// Render auth command - use full OAuth2 template when authorization URL is present,
 	// browser cookie template for cookie-auth APIs, otherwise simple token-management template
 	authPath := filepath.Join("internal", "cli", "auth.go")
 	authTmpl := "auth_simple.go.tmpl"
@@ -1624,6 +1638,14 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		overflow = len(shownNovel) - maxHighlightLines
 		shownNovel = shownNovel[:maxHighlightLines]
 	}
+	// HasAuthCommand: true when renderAuthFiles emitted auth.go. Mirrors the
+	// same condition used by renderAuthFiles to skip emission for no-auth
+	// specs. The template uses this to gate the rootCmd.AddCommand(newAuthCmd)
+	// registration so the root binary doesn't reference an undefined symbol.
+	hasAuthCommand := g.Spec.Auth.Type != "none" ||
+		g.Spec.Auth.AuthorizationURL != "" ||
+		g.hasTrafficAnalysisHint("graphql_persisted_query")
+
 	rootData := struct {
 		*spec.APISpec
 		VisionSet             VisionTemplateSet
@@ -1637,6 +1659,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		NovelOverflowCount    int
 		HasAsyncJobs          bool
 		AsyncJobCount         int
+		HasAuthCommand        bool
 	}{
 		APISpec:               g.Spec,
 		VisionSet:             g.VisionSet,
@@ -1650,6 +1673,7 @@ func (g *Generator) renderRootProjectFiles(promotedCommands []PromotedCommand, p
 		NovelOverflowCount:    overflow,
 		HasAsyncJobs:          len(g.AsyncJobs) > 0,
 		AsyncJobCount:         len(g.AsyncJobs),
+		HasAuthCommand:        hasAuthCommand,
 	}
 	if err := g.renderTemplate("root.go.tmpl", filepath.Join("internal", "cli", "root.go"), rootData); err != nil {
 		return fmt.Errorf("rendering root: %w", err)
