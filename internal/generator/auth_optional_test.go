@@ -3,6 +3,7 @@ package generator
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
@@ -143,4 +144,45 @@ func TestAuthConfig_Optional_ZeroValue(t *testing.T) {
 	require.False(t, a.Optional, "Optional must default to false")
 	a.Optional = true
 	require.True(t, a.Optional)
+}
+
+// TestSetToken_ClearsLegacyAuthHeader verifies the generated set-token handler
+// clears cfg.AuthHeaderVal before saving. Without this clear, a pre-existing
+// auth_header in config.toml (the common regenerate scenario) shadows the
+// newly-saved access_token via Config.AuthHeader()'s resolver order, and
+// set-token silently has no effect on the active credential.
+//
+// Verification is a substring match on the generated source: the rendered
+// auth.go must contain `cfg.AuthHeaderVal = ""` immediately before the
+// SaveTokens call. The presence of the line is the contract; the exact
+// behavior is exercised end-to-end by the generated CLI's own set-token
+// command at runtime.
+//
+// Refs cal-com retro #334 WU-4.
+func TestSetToken_ClearsLegacyAuthHeader(t *testing.T) {
+	t.Parallel()
+
+	apiSpec := minimalSpec("clear-legacy-header")
+	apiSpec.Auth.EnvVars = []string{"CLEAR_LEGACY_HEADER_API_KEY"}
+
+	outputDir := filepath.Join(t.TempDir(), "clear-legacy-header-pp-cli")
+	require.NoError(t, New(apiSpec, outputDir).Generate())
+
+	authSrc, err := os.ReadFile(filepath.Join(outputDir, "internal", "cli", "auth.go"))
+	require.NoError(t, err)
+	src := string(authSrc)
+
+	// The clear must appear inside the set-token handler (not elsewhere).
+	require.Contains(t, src, "func newAuthSetTokenCmd",
+		"set-token handler must be emitted for the default auth template")
+	require.Contains(t, src, `cfg.AuthHeaderVal = ""`,
+		"set-token must clear legacy auth_header before SaveTokens; without this, a pre-existing auth_header shadows the new token")
+
+	// Confirm ordering: the clear comes before SaveTokens in the same handler.
+	clearIdx := strings.Index(src, `cfg.AuthHeaderVal = ""`)
+	saveIdx := strings.Index(src, "cfg.SaveTokens(")
+	require.NotEqual(t, -1, clearIdx, "auth_header clear must be present")
+	require.NotEqual(t, -1, saveIdx, "SaveTokens call must be present")
+	require.Less(t, clearIdx, saveIdx,
+		"the auth_header clear must occur BEFORE SaveTokens — otherwise SaveTokens persists with the stale auth_header still set")
 }
