@@ -319,14 +319,34 @@ affect this specific API and wouldn't recur.
 **Step A: Cross-API stress test.** Test across API shapes (standard REST, proxy-envelope,
 RPC-style) and input methods (OpenAPI, crowd-sniffed, HAR-sniffed, no spec).
 
-**Step B: Estimate frequency.** Every API / Most APIs / API subclass (name it) / This API only.
+**Step B: Name three concrete APIs that would benefit.** List three specific APIs by name
+(e.g., "Stripe, Notion, GitHub") that would benefit from this fix beyond the one that
+surfaced it. If you can only name two — or one plus handwaving "many APIs in theory" — the
+finding is capped at **P3 with a `subclass:<name>` annotation**, or moves to Skipped.
+Concrete cross-API evidence is the burden of proof for P1/P2; "20% of catalog" without
+naming three is optimism, not evidence.
 
-**Step C: Assess fallback cost.** How reliably will Claude catch and fix this across every
+**Step C: Counter-check question.** Ask explicitly: "If I implemented this fix, would it
+actively hurt any API that doesn't have this pattern?" If yes, the fix needs a guard or
+condition before being P1/P2 — not a default change. Example: turning on client-side
+`?limit=N` truncation by default would hurt APIs that need server-side pagination for
+correctness; it stays P2 only because it's gated on profiler-detected absence of a
+paginator. Without that guard the same finding is unsafe to land.
+
+**Step D: Recurrence-cost check.** Search prior retros under
+`~/printing-press/manuscripts/*/proofs/*-retro-*.md` for the same finding. If the same
+finding has been raised in 2+ prior retros without being implemented, the prior cost-
+benefit math has been "no" twice. Don't re-raise it at the same priority — either move
+to P3 with a "raised N times, still not justified" annotation, or reframe the finding
+into a smaller incremental fix that addresses part of the friction. Recurrence at the
+same priority is a triage failure, not stronger evidence.
+
+**Step E: Assess fallback cost.** How reliably will Claude catch and fix this across every
 future API? A "simple" edit Claude forgets 30% of the time means 30% ship with the defect.
 
-**Step D: Make the tradeoff.** Default is **fix it in the Printing Press**. The burden of
+**Step F: Make the tradeoff.** Default is **fix it in the Printing Press**. The burden of
 proof is on *not* fixing. Skip only when the behavior is unlikely to recur across 50
-different APIs.
+different APIs AND Step B couldn't name three concrete APIs.
 
 When the finding applies to an API subclass, include: Condition (when to activate),
 Guard (when to skip), Frequency estimate.
@@ -613,8 +633,12 @@ Printing Press repo and cannot act on the findings directly.
 - Prefer automatic fixes (templates, binary) over instructional fixes (skill).
 - For recurring friction, always answer "inherent or fixable?" honestly.
 - Be honest about what went well. Protecting good patterns matters.
-- **Bias toward fixing.** When in doubt, fix it — scope narrowly with conditional
-  logic if needed.
+- **Bias toward fixing only when the fix would help APIs you can name.**
+  When in doubt, fix it — but only when Phase 3 Step B gave you three concrete
+  cross-API examples. "20% of catalog" without named APIs is optimism, not
+  evidence. The retro is a triage tool, not a wishlist; an issue overloaded
+  with subclass findings shipped at P2 wastes maintainer attention. Scope
+  narrowly with conditional logic when a real cross-API pattern is in play.
 - **Look for broader patterns.** Before skipping, consider whether this is the first
   sighting of a behavior you'd encounter again.
 - When a fix applies to an API subclass, include the condition AND the guard.
