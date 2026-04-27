@@ -1707,17 +1707,17 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 	switch {
 	case strings.Contains(nameLower, "bot"):
 		scoreable = true
-		if strings.Contains(clientContent, `"Bot "`) || strings.Contains(clientContent, "`Bot `") {
+		if authPrefixLiteralPresent("Bot", clientContent, configContent, authContent) {
 			authHeaderMatched = true
 		}
 	case strings.Contains(nameLower, "bearer") || (scheme.Type == "http" && scheme.Scheme == "bearer"):
 		scoreable = true
-		if strings.Contains(clientContent, `"Bearer "`) || strings.Contains(clientContent, "`Bearer `") {
+		if authPrefixLiteralPresent("Bearer", clientContent, configContent, authContent) {
 			authHeaderMatched = true
 		}
 	case strings.Contains(nameLower, "basic") || (scheme.Type == "http" && scheme.Scheme == "basic"):
 		scoreable = true
-		if strings.Contains(clientContent, `"Basic "`) || strings.Contains(clientContent, "`Basic `") {
+		if authPrefixLiteralPresent("Basic", clientContent, configContent, authContent) {
 			authHeaderMatched = true
 		}
 	case strings.EqualFold(scheme.Type, "apikey"):
@@ -1733,7 +1733,7 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		}
 	case strings.EqualFold(scheme.Type, "oauth2"), strings.EqualFold(scheme.Type, "openidconnect"):
 		scoreable = true
-		if strings.Contains(clientContent, `"Bearer "`) || strings.Contains(clientContent, "`Bearer `") {
+		if authPrefixLiteralPresent("Bearer", clientContent, configContent, authContent) {
 			authHeaderMatched = true
 		}
 	}
@@ -1780,6 +1780,17 @@ func scoreAuthScheme(clientContent, configContent, authContent string, scheme op
 		score = 10
 	}
 	return score, true
+}
+
+func authPrefixLiteralPresent(prefix string, contents ...string) bool {
+	doubleQuoted := `"` + prefix + ` "`
+	rawQuoted := "`" + prefix + " `"
+	for _, content := range contents {
+		if strings.Contains(content, doubleQuoted) || strings.Contains(content, rawQuoted) {
+			return true
+		}
+	}
+	return false
 }
 
 func isHTTPMethod(method string) bool {

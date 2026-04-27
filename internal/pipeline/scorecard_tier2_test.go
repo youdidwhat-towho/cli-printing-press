@@ -663,6 +663,68 @@ func setAuth(req *request, token string) {
 		assert.Greater(t, sc.Steinberger.AuthProtocol, 0)
 	})
 
+	t.Run("bearer prefix in config scores auth protocol", func(t *testing.T) {
+		dir := t.TempDir()
+		writeScorecardFixture(t, dir, "internal/client/client.go", `
+package client
+
+import "net/http"
+
+func setAuth(req *http.Request, authHeader string) {
+	req.Header.Set("Authorization", authHeader)
+}
+`)
+		writeScorecardFixture(t, dir, "internal/config/config.go", `
+package config
+
+import "os"
+
+type Config struct {
+	CalComToken string
+}
+
+func Load() Config {
+	return Config{CalComToken: os.Getenv("CAL_COM_TOKEN")}
+}
+
+func (c Config) AuthHeader() string {
+	return "Bearer " + c.CalComToken
+}
+`)
+
+		specPath := filepath.Join(dir, "spec-bearer-config.json")
+		writeScorecardFixture(t, dir, "spec-bearer-config.json", `{
+  "paths": {
+    "/bookings": {
+      "get": {
+        "security": [
+          {
+            "CAL_COM_TOKEN": []
+          }
+        ],
+        "responses": {
+          "200": { "description": "ok" }
+        }
+      }
+    }
+  },
+  "components": {
+    "securitySchemes": {
+      "CAL_COM_TOKEN": {
+        "type": "http",
+        "scheme": "bearer"
+      }
+    }
+  }
+}`)
+
+		pipelineDir := t.TempDir()
+		sc, err := RunScorecard(dir, pipelineDir, specPath, nil)
+		assert.NoError(t, err)
+		assert.NotContains(t, sc.UnscoredDimensions, "auth_protocol")
+		assert.GreaterOrEqual(t, sc.Steinberger.AuthProtocol, 7)
+	})
+
 	t.Run("anonymous alternative leaves auth unscored", func(t *testing.T) {
 		dir := t.TempDir()
 		writeScorecardFixture(t, dir, "internal/client/client.go", `
