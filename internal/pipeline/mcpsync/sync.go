@@ -44,12 +44,16 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if state.State == pipeline.MCPSurfaceRuntime {
-		return Result{Detail: "already up to date"}, nil
-	}
 	if state.State == pipeline.MCPSurfaceHandEdited && !opts.Force {
 		return Result{}, fmt.Errorf("%w: tools.go appears hand-edited; refusing to overwrite. Use --force to override at your own risk", ErrHandEdited)
 	}
+	// MCPSurfaceRuntime means the MCP source is already on the new walker
+	// template and we don't need to migrate that. But we still refresh
+	// metadata files (manifest.json, tools-manifest.json) because their
+	// upstream sources (.printing-press.json description, spec auth, etc.)
+	// may have changed since the last sync. Skipping these would silently
+	// freeze stale descriptions/annotations through future regen.
+	alreadyMigrated := state.State == pipeline.MCPSurfaceRuntime
 
 	parsed, err := loadArchivedSpec(cliDir)
 	if err != nil {
@@ -72,18 +76,20 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	if err != nil {
 		return Result{}, err
 	}
-	if err := ensureRootCmdExport(cliDir); err != nil {
-		return Result{}, err
-	}
 	features := loadNovelFeatures(cliDir)
-	if err := ensureEndpointAnnotations(cliDir, parsed, features); err != nil {
-		return Result{}, err
-	}
-	gen := generator.New(parsed, cliDir)
-	gen.NovelFeatures = features
-	gen.ModulePath = modulePath
-	if err := gen.GenerateMCPSurfaceOnly(); err != nil {
-		return Result{}, fmt.Errorf("rendering MCP surface: %w", err)
+	if !alreadyMigrated {
+		if err := ensureRootCmdExport(cliDir); err != nil {
+			return Result{}, err
+		}
+		if err := ensureEndpointAnnotations(cliDir, parsed, features); err != nil {
+			return Result{}, err
+		}
+		gen := generator.New(parsed, cliDir)
+		gen.NovelFeatures = features
+		gen.ModulePath = modulePath
+		if err := gen.GenerateMCPSurfaceOnly(); err != nil {
+			return Result{}, fmt.Errorf("rendering MCP surface: %w", err)
+		}
 	}
 	if err := pipeline.WriteToolsManifest(cliDir, parsed); err != nil {
 		return Result{}, fmt.Errorf("regenerating tools-manifest.json: %w", err)
@@ -95,6 +101,9 @@ func Sync(cliDir string, opts Options) (Result, error) {
 	// install in Claude Desktop.
 	if err := pipeline.WriteMCPBManifest(cliDir); err != nil {
 		return Result{}, fmt.Errorf("regenerating manifest.json: %w", err)
+	}
+	if alreadyMigrated {
+		return Result{Changed: true, Detail: "refreshed manifest.json + tools-manifest.json from current spec/.printing-press.json"}, nil
 	}
 	return Result{Changed: true, Detail: "migrated MCP surface to runtime Cobra-tree mirror"}, nil
 }
