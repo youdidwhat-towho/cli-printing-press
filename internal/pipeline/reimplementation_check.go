@@ -352,29 +352,6 @@ func hasClientSignal(content string) bool {
 		hasSiblingInternalImport(content)
 }
 
-// reservedInternalPackages is the set of internal package names the
-// generator emits unconditionally. An import of any of these is NOT a
-// signal of a hand-built API client — it just means the file uses a
-// generator-emitted helper. Anything else under `internal/<name>` is
-// presumed to be agent-authored API client code (e.g. `internal/algolia`
-// for a CLI that fronts both Firebase and Algolia).
-//
-// Surfaced by hackernews retro #350 finding F4.
-var reservedInternalPackages = map[string]bool{
-	"client":   true,
-	"store":    true,
-	"cliutil":  true,
-	"cache":    true,
-	"config":   true,
-	"mcp":      true,
-	"types":    true,
-	"share":    true,
-	"deliver":  true,
-	"profile":  true,
-	"feedback": true,
-	"graphql":  true,
-}
-
 // hasSiblingInternalImport reports whether the file imports a non-reserved
 // `internal/<name>` package — the signal for a hand-built secondary
 // client. The regex matches all internal imports; we filter the

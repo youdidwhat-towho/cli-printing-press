@@ -438,6 +438,143 @@ def flag_declared_in(files: Iterable[Path], flag_name: str) -> bool:
     return False
 
 
+# Matches a function call whose first positional arg is `cmd` (or `cmd.Flags()`).
+# Captures the function name so the verifier can look up its body.
+HELPER_CALL_RE = re.compile(
+    r"\b([a-zA-Z_]\w*)\s*\(\s*cmd(?:\b|\.Flags\(\))"
+)
+
+# Cobra/stdlib methods that take cmd as first arg but never declare flags.
+_HELPER_CALL_IGNORE = frozenset({
+    "AddCommand", "Run", "Execute", "Help", "Usage",
+    "Print", "Printf", "Println",
+})
+
+
+def go_block_body(text: str, open_brace: int) -> str:
+    """Return the body for the Go block whose `{` starts at open_brace.
+
+    This is intentionally a small scanner rather than a Go parser. It handles
+    nested braces and skips comments/strings so adjacent helper functions do
+    not leak into the matched helper body.
+    """
+    if open_brace < 0 or open_brace >= len(text) or text[open_brace] != "{":
+        return ""
+
+    depth = 0
+    i = open_brace
+    state = "code"
+    while i < len(text):
+        ch = text[i]
+        nxt = text[i + 1] if i + 1 < len(text) else ""
+
+        if state == "line_comment":
+            if ch == "\n":
+                state = "code"
+            i += 1
+            continue
+        if state == "block_comment":
+            if ch == "*" and nxt == "/":
+                state = "code"
+                i += 2
+            else:
+                i += 1
+            continue
+        if state == "double_string":
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == '"':
+                state = "code"
+            i += 1
+            continue
+        if state == "raw_string":
+            if ch == "`":
+                state = "code"
+            i += 1
+            continue
+        if state == "rune":
+            if ch == "\\":
+                i += 2
+                continue
+            if ch == "'":
+                state = "code"
+            i += 1
+            continue
+
+        if ch == "/" and nxt == "/":
+            state = "line_comment"
+            i += 2
+            continue
+        if ch == "/" and nxt == "*":
+            state = "block_comment"
+            i += 2
+            continue
+        if ch == '"':
+            state = "double_string"
+            i += 1
+            continue
+        if ch == "`":
+            state = "raw_string"
+            i += 1
+            continue
+        if ch == "'":
+            state = "rune"
+            i += 1
+            continue
+
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[open_brace + 1:i]
+        i += 1
+
+    return ""
+
+
+def flag_declared_via_helper(cli_dir: Path, cmd_files: Iterable[Path], flag_name: str) -> bool:
+    """Return True if any helper called from cmd_files (with cmd as first arg)
+    declares flag_name in its body. One level of indirection only — no recursive
+    resolution."""
+    helper_names: set[str] = set()
+    for f in cmd_files:
+        try:
+            text = f.read_text()
+        except Exception:
+            continue
+        for m in HELPER_CALL_RE.finditer(text):
+            name = m.group(1)
+            if name not in _HELPER_CALL_IGNORE:
+                helper_names.add(name)
+    if not helper_names:
+        return False
+
+    src = cli_dir / "internal/cli"
+    if not src.exists():
+        return False
+
+    func_re = re.compile(
+        r"func\s+("
+        + "|".join(re.escape(n) for n in helper_names)
+        + r")\s*\([^)]*\)\s*(?:\w+\s*)?\{"
+    )
+    for go_file in src.glob("*.go"):
+        if go_file.name.endswith("_test.go"):
+            continue
+        try:
+            text = go_file.read_text()
+        except Exception:
+            continue
+        for m in func_re.finditer(text):
+            body = go_block_body(text, m.end() - 1)
+            for fm in FLAG_DECL_RE.finditer(body):
+                if fm.group(3) == flag_name:
+                    return True
+    return False
+
+
 def persistent_flag_declared(cli_dir: Path, flag_name: str) -> bool:
     src = cli_dir / "internal/cli"
     if not src.exists():
@@ -600,6 +737,8 @@ def check_flag_commands(cli_dir: Path, skill: Path, cli_binary: str, report: Rep
             if cmd_files and flag_declared_in(cmd_files, flag):
                 continue
             if persistent_flag_declared(cli_dir, flag):
+                continue
+            if cmd_files and flag_declared_via_helper(cli_dir, cmd_files, flag):
                 continue
             path_str = " ".join(cmd_path)
             if flag_declared_in(all_files, flag):

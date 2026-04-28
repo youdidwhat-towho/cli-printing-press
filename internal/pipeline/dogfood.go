@@ -33,6 +33,7 @@ type DogfoodReport struct {
 	WiringCheck           WiringCheckResult           `json:"wiring_check"`
 	NovelFeaturesCheck    NovelFeaturesCheckResult    `json:"novel_features_check"`
 	ReimplementationCheck ReimplementationCheckResult `json:"reimplementation_check"`
+	SourceClientCheck     SourceClientCheckResult     `json:"source_client_check"`
 	TestPresence          TestPresenceResult          `json:"test_presence"`
 	NamingCheck           NamingCheckResult           `json:"naming_check"`
 	Issues                []string                    `json:"issues"`
@@ -258,6 +259,7 @@ func RunDogfood(dir, specPath string, opts ...DogfoodOption) (*DogfoodReport, er
 	report.WiringCheck = checkWiring(dir)
 	report.NovelFeaturesCheck = checkNovelFeatures(dir, cfg.researchDir)
 	report.ReimplementationCheck = checkReimplementation(dir, cfg.researchDir)
+	report.SourceClientCheck = checkSourceClients(dir)
 	report.TestPresence = checkTestPresence(dir)
 	report.NamingCheck = checkNamingConsistency(dir)
 	report.Issues = collectDogfoodIssues(report, spec != nil)
@@ -1330,6 +1332,7 @@ var dogfoodVerdictRules = []dogfoodVerdictRule{
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.NovelFeaturesCheck.Missing) > 0 }},
 	// Surface hand-rolled responses without hard-blocking early iteration.
 	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.ReimplementationCheck.Suspicious) > 0 }},
+	{"WARN", func(r *DogfoodReport, _ bool) bool { return len(r.SourceClientCheck.Findings) > 0 }},
 }
 
 func deriveDogfoodVerdict(report *DogfoodReport, hasSpec bool) string {
@@ -1401,6 +1404,15 @@ func collectDogfoodIssues(report *DogfoodReport, hasSpec bool) []string {
 		issues = append(issues, fmt.Sprintf("%d/%d novel features look reimplemented: %s",
 			len(report.ReimplementationCheck.Suspicious),
 			report.ReimplementationCheck.Checked,
+			strings.Join(parts, "; ")))
+	}
+	if len(report.SourceClientCheck.Findings) > 0 {
+		parts := make([]string, 0, len(report.SourceClientCheck.Findings))
+		for _, f := range report.SourceClientCheck.Findings {
+			parts = append(parts, fmt.Sprintf("%s — %s", f.File, f.Reason))
+		}
+		issues = append(issues, fmt.Sprintf("%d source client file(s) without rate-limit handling: %s",
+			len(report.SourceClientCheck.Findings),
 			strings.Join(parts, "; ")))
 	}
 	if len(report.TestPresence.MissingTests) > 0 {

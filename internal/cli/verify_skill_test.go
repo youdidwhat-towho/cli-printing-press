@@ -22,32 +22,6 @@ func TestVerifySkill_DetectsWrongFlagOnCommand(t *testing.T) {
 	bin := buildPrintingPressBinary(t)
 	dir := t.TempDir()
 
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
-
-	// Minimal source: search (without --max-time) and tonight (with --max-time)
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "search.go"), []byte(`package cli
-import "github.com/spf13/cobra"
-func newSearchCmd() *cobra.Command {
-	var limit int
-	cmd := &cobra.Command{Use: "search <query>"}
-	cmd.Flags().IntVar(&limit, "limit", 10, "Max results")
-	return cmd
-}
-`), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "tonight.go"), []byte(`package cli
-import (
-	"github.com/spf13/cobra"
-	"time"
-)
-func newTonightCmd() *cobra.Command {
-	var maxTime time.Duration
-	cmd := &cobra.Command{Use: "tonight"}
-	cmd.Flags().DurationVar(&maxTime, "max-time", 0, "Max total time")
-	return cmd
-}
-`), 0o644))
-
-	// SKILL claims search --max-time (the bug).
 	skill := `---
 name: pp-fixture
 description: "fixture"
@@ -59,8 +33,29 @@ description: "fixture"
 fixture-pp-cli search "chicken" --max-time 30m
 ` + "```" + `
 `
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"fixture-pp-cli"}`), 0o644))
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"search.go": `package cli
+import "github.com/spf13/cobra"
+func newSearchCmd() *cobra.Command {
+	var limit int
+	cmd := &cobra.Command{Use: "search <query>"}
+	cmd.Flags().IntVar(&limit, "limit", 10, "Max results")
+	return cmd
+}
+`,
+		"tonight.go": `package cli
+import (
+	"github.com/spf13/cobra"
+	"time"
+)
+func newTonightCmd() *cobra.Command {
+	var maxTime time.Duration
+	cmd := &cobra.Command{Use: "tonight"}
+	cmd.Flags().DurationVar(&maxTime, "max-time", 0, "Max total time")
+	return cmd
+}
+`,
+	}, skill)
 
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
 	require.Error(t, err, "verifier must exit non-zero for a SKILL with an undeclared flag")
@@ -88,12 +83,10 @@ func TestVerifySkill_NoFalsePositiveOnSharedLeafName(t *testing.T) {
 
 	bin := buildPrintingPressBinary(t)
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
 
-	// root.go wires both save and profile into rootCmd. The verifier
-	// must follow rootCmd.AddCommand calls to know that cmd_path=['save']
-	// resolves to save_cmd.go (not profile.go's profile-save subcommand).
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "root.go"), []byte(`package cli
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli save https://example.com --tags foo,bar\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"root.go": `package cli
 import "github.com/spf13/cobra"
 func Execute() error {
 	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
@@ -101,12 +94,8 @@ func Execute() error {
 	rootCmd.AddCommand(newProfileCmd())
 	return rootCmd.Execute()
 }
-`), 0o644))
-
-	// Top-level save: declares --tags. Use string is intentionally
-	// short so the legacy specificity heuristic would lose the tie-break
-	// against profile.go's longer Use string.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "save_cmd.go"), []byte(`package cli
+`,
+		"save_cmd.go": `package cli
 import "github.com/spf13/cobra"
 func newSaveCmd() *cobra.Command {
 	var tags string
@@ -114,12 +103,8 @@ func newSaveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&tags, "tags", "", "Comma-separated tags")
 	return cmd
 }
-`), 0o644))
-
-	// profile save: declares its own flags. Use string is more specific
-	// (more positionals + variadic), which would win the legacy
-	// tie-break and drop save_cmd.go from the flag check.
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "profile.go"), []byte(`package cli
+`,
+		"profile.go": `package cli
 import "github.com/spf13/cobra"
 func newProfileCmd() *cobra.Command {
 	cmd := &cobra.Command{Use: "profile"}
@@ -132,14 +117,8 @@ func newProfileSaveCmd() *cobra.Command {
 	cmd.Flags().StringVar(&label, "label", "", "Profile label")
 	return cmd
 }
-`), 0o644))
-
-	// SKILL uses --tags on the top-level save command. The graph walk
-	// must resolve to save_cmd.go (which declares --tags) and not
-	// profile.go (which declares --label).
-	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli save https://example.com --tags foo,bar\n```\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"fixture-pp-cli"}`), 0o644))
+`,
+	}, skill)
 
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
 	require.NoError(t, err, "verifier must NOT raise findings for valid shared-leaf usage; got: %s", string(out))
@@ -154,8 +133,10 @@ func TestVerifySkill_PassesWhenSkillMatches(t *testing.T) {
 
 	bin := buildPrintingPressBinary(t)
 	dir := t.TempDir()
-	require.NoError(t, os.MkdirAll(filepath.Join(dir, "internal", "cli"), 0o755))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "internal", "cli", "search.go"), []byte(`package cli
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli search \"chicken\" --limit 5\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"search.go": `package cli
 import "github.com/spf13/cobra"
 func newSearchCmd() *cobra.Command {
 	var limit int
@@ -163,14 +144,136 @@ func newSearchCmd() *cobra.Command {
 	cmd.Flags().IntVar(&limit, "limit", 10, "Max results")
 	return cmd
 }
-`), 0o644))
-	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli search \"chicken\" --limit 5\n```\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644))
-	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"fixture-pp-cli"}`), 0o644))
+`,
+	}, skill)
 
 	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
 	require.NoError(t, err, "clean SKILL should exit 0, got: %s", string(out))
 	require.Contains(t, string(out), "All checks passed")
+}
+
+// TestVerifySkill_FlagDeclaredViaHelper asserts the verifier accepts a flag
+// declared one level deep through a shared helper invoked with cmd as first
+// arg, e.g. addTargetFlags(cmd, &t) whose body declares the flag.
+func TestVerifySkill_FlagDeclaredViaHelper(t *testing.T) {
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli snapshot --domain example.com\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"snapshot.go": `package cli
+import "github.com/spf13/cobra"
+type targetFlags struct{ domain, pick string }
+func newSnapshotCmd() *cobra.Command {
+	var t targetFlags
+	cmd := &cobra.Command{Use: "snapshot [co]"}
+	addTargetFlags(cmd, &t)
+	return cmd
+}
+`,
+		"helpers.go": `package cli
+import "github.com/spf13/cobra"
+func addTargetFlags(cmd *cobra.Command, t *targetFlags) {
+	cmd.Flags().StringVar(&t.domain, "domain", "", "Domain")
+	cmd.Flags().StringVar(&t.pick, "pick", "", "Pick which source")
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSnapshotCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
+	require.NoError(t, err, "verifier must accept flags declared via one level of helper indirection; got: %s", string(out))
+	require.Contains(t, string(out), "All checks passed")
+}
+
+// TestVerifySkill_FlagHelperDoesNotScanAdjacentFunctions confirms helper
+// matching is limited to the called helper's body. A later helper in the same
+// file must not make addTargetFlags look like it declares --pick.
+func TestVerifySkill_FlagHelperDoesNotScanAdjacentFunctions(t *testing.T) {
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli snapshot --pick sec\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"snapshot.go": `package cli
+import "github.com/spf13/cobra"
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "snapshot [co]"}
+	addTargetFlags(cmd)
+	return cmd
+}
+`,
+		"helpers.go": `package cli
+import "github.com/spf13/cobra"
+func addTargetFlags(cmd *cobra.Command) {
+	var domain string
+	cmd.Flags().StringVar(&domain, "domain", "", "Domain")
+}
+
+func addPickFlags(cmd *cobra.Command) {
+	var pick string
+	cmd.Flags().StringVar(&pick, "pick", "", "Pick which source")
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSnapshotCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
+	require.Error(t, err, "verifier must not treat adjacent helper declarations as part of addTargetFlags")
+	require.Contains(t, string(out), "--pick")
+}
+
+// TestVerifySkill_FlagNotDeclaredAnywhere confirms the helper-indirection
+// fallback does not cover for a flag that genuinely isn't declared.
+func TestVerifySkill_FlagNotDeclaredAnywhere(t *testing.T) {
+	bin := buildPrintingPressBinary(t)
+	dir := t.TempDir()
+
+	// SKILL claims --pick which is not declared anywhere.
+	skill := "---\nname: pp-fixture\n---\n\n# Fixture\n\n```bash\nfixture-pp-cli snapshot --pick sec\n```\n"
+	writeVerifySkillFixture(t, dir, map[string]string{
+		"snapshot.go": `package cli
+import "github.com/spf13/cobra"
+func newSnapshotCmd() *cobra.Command {
+	cmd := &cobra.Command{Use: "snapshot [co]"}
+	addTargetFlags(cmd)
+	return cmd
+}
+`,
+		"helpers.go": `package cli
+import "github.com/spf13/cobra"
+func addTargetFlags(cmd *cobra.Command) {
+	var x string
+	cmd.Flags().StringVar(&x, "domain", "", "Domain")
+}
+`,
+		"root.go": `package cli
+import "github.com/spf13/cobra"
+func Execute() error {
+	rootCmd := &cobra.Command{Use: "fixture-pp-cli"}
+	rootCmd.AddCommand(newSnapshotCmd())
+	return rootCmd.Execute()
+}
+`,
+	}, skill)
+
+	out, err := exec.Command(bin, "verify-skill", "--dir", dir).CombinedOutput()
+	require.Error(t, err, "undeclared flag must still produce a finding")
+	require.Contains(t, string(out), "--pick")
 }
 
 // TestVerifySkill_RejectsMissingInputs confirms usage errors (code 2).
@@ -188,6 +291,17 @@ func TestVerifySkill_RejectsMissingInputs(t *testing.T) {
 	out, err := exec.Command(bin, "verify-skill", "--dir", emptyDir).CombinedOutput()
 	require.Error(t, err)
 	require.True(t, strings.Contains(string(out), "no SKILL.md") || strings.Contains(string(out), "no internal/cli"))
+}
+
+func writeVerifySkillFixture(t *testing.T, dir string, files map[string]string, skill string) {
+	t.Helper()
+	cliDir := filepath.Join(dir, "internal", "cli")
+	require.NoError(t, os.MkdirAll(cliDir, 0o755))
+	for name, content := range files {
+		require.NoError(t, os.WriteFile(filepath.Join(cliDir, name), []byte(content), 0o644))
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(skill), 0o644))
+	require.NoError(t, os.WriteFile(filepath.Join(dir, ".printing-press.json"), []byte(`{"cli_name":"fixture-pp-cli"}`), 0o644))
 }
 
 // buildPrintingPressBinary compiles the printing-press binary into a test

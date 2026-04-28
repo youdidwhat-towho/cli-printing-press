@@ -56,6 +56,10 @@
     "exempted_via_store": 0,
     "skipped": true
   },
+  "source_client_check": {
+    "checked": 0,
+    "skipped": true
+  },
   "test_presence": {
     "checked": 0
   },

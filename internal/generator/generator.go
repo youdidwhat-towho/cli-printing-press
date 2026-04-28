@@ -1014,6 +1014,7 @@ func (g *Generator) renderSingleFiles() error {
 		"cliutil_fanout.go.tmpl":    filepath.Join("internal", "cliutil", "fanout.go"),
 		"cliutil_text.go.tmpl":      filepath.Join("internal", "cliutil", "text.go"),
 		"cliutil_probe.go.tmpl":     filepath.Join("internal", "cliutil", "probe.go"),
+		"cliutil_ratelimit.go.tmpl": filepath.Join("internal", "cliutil", "ratelimit.go"),
 		"cliutil_verifyenv.go.tmpl": filepath.Join("internal", "cliutil", "verifyenv.go"),
 		"cliutil_test.go.tmpl":      filepath.Join("internal", "cliutil", "cliutil_test.go"),
 		"types.go.tmpl":             filepath.Join("internal", "types", "types.go"),

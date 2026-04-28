@@ -62,6 +62,10 @@
     "exempted_via_store": 0,
     "skipped": true
   },
+  "source_client_check": {
+    "checked": 0,
+    "skipped": true
+  },
   "spec_path": "<ARTIFACT_DIR>/dogfood-verdict-matrix/fixtures/fail-path-auth-dead/spec.yaml",
   "test_presence": {
     "checked": 0

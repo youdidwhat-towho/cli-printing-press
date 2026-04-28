@@ -1681,6 +1681,7 @@ After building each command in Priority 1 and Priority 2, verify these 9 princip
 6. **Composability**: Exit codes are typed (0/2/3/4/5/7/10 as applicable), output pipes to `jq` cleanly
 7. **Bounded responses**: `--compact` returns only high-gravity fields, list commands have `--limit`
 8. **Verify-friendly RunE**: Hand-written commands MUST NOT use `Args: cobra.MinimumNArgs(N)` or `MarkFlagRequired(...)`. Cobra evaluates both before RunE runs, so a `--dry-run` guard inside RunE cannot reach if those gates fail. Verify probes commands with `--dry-run` and expects exit 0; commands with hard arg/flag gates fail those probes. Instead: validate inside RunE, fall through to `cmd.Help()` for help-only invocations, and short-circuit on `dryRunOK(flags)` before any IO.
+   - **Use string for "positional OR flag" commands**: when a command accepts a positional `<x>` OR a flag `--y` as alternatives (e.g., `snapshot <co>` or `snapshot --domain example.com`), declare `Use: "<cmd> [x]"` with **square brackets** (optional), not `<x>` (required). Validate "exactly one of x or --y" inside RunE. Required positionals declared with angle brackets break verify-skill recipes that use the flag-only form.
 9. **Side-effect commands stay quiet under verify**: Any hand-written command that performs a visible side effect (opens a browser tab, sends a notification, plays audio, dials out to an OS handler) MUST follow both halves of the convention:
    - **Print by default; opt in to the action.** The default behavior prints what would happen (`would launch: <url>`); a flag like `--launch` / `--send` / `--play` is required to actually do it. food52's `open` command is the reference shape — see `internal/cli/open.go` after retro #337.
    - **Short-circuit when `cliutil.IsVerifyEnv()` returns true.** The Printing Press verifier sets `PRINTING_PRESS_VERIFY=1` in every mock-mode subprocess; commands that ignore it can spam the user's environment during a verify pass even with the print-by-default flag pattern. The helper is generated into every CLI's `internal/cliutil/verifyenv.go`. Pattern:
@@ -1691,6 +1692,7 @@ After building each command in Priority 1 and Priority 2, verify these 9 princip
      }
      ```
    This is defense-in-depth: the verifier also runs a heuristic side-effect classifier, but it can miss commands whose `--help` text and source don't match the heuristics. The env-var check is the floor.
+10. **Per-source rate limiting**: any hand-written client in a sibling internal package (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc. — anything not generator-emitted) that makes outbound HTTP calls MUST use `cliutil.AdaptiveLimiter` and surface `*cliutil.RateLimitError` when 429 retries are exhausted. Empty-on-throttle is indistinguishable from "no data exists" and silently corrupts downstream queries. Read [references/per-source-rate-limiting.md](references/per-source-rate-limiting.md) when authoring a sibling client. Enforced at generation time by dogfood's `source_client_check`.
 
 #### Verify-friendly RunE template
 
@@ -1846,6 +1848,8 @@ Ship threshold (the umbrella's verdict is the canonical signal — all of these 
 - `scorecard` is at least 65 and **no flagship or approved-in-Phase-1.5 feature returns wrong/empty output**
 
 **Behavioral correctness is part of the ship threshold, not just structural quality.** A Grade A scorecard with a broken flagship feature (e.g., `goat "brownies"` returning a chili recipe) does NOT pass the ship threshold. Run a sample invocation of every novel-feature command before declaring shipcheck complete.
+
+**Per-source row for combo CLIs (synthetic spec, multiple data sources).** For every named source in a combo CLI (`internal/source/<name>/`, `internal/recipes/`, `internal/phgraphql/`, etc.) the dogfood test matrix MUST add one row per source: with the source's limiter exhausted (or the upstream genuinely throttling), assert that the user-facing command surfaces a typed `*cliutil.RateLimitError` referencing the source — not empty JSON / `0 results`. A passing row says: "the CLI distinguishes 'no data' from 'we got rate-limited' for this source." The matrix-builder derives rows from the command tree by default; for combo CLIs, also derive rows from the source list. `source_client_check` catches the static signal that throttling is silently swallowed; only the runtime row proves the user-visible behavior.
 
 Maximum 2 shipcheck loops by default.
 
