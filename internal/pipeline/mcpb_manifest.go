@@ -154,13 +154,13 @@ func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(buildMCPBManifest(m)); err != nil {
+	if err := enc.Encode(buildMCPBManifest(dir, m)); err != nil {
 		return fmt.Errorf("marshaling MCPB manifest: %w", err)
 	}
 	return os.WriteFile(filepath.Join(dir, MCPBManifestFilename), buf.Bytes(), 0o644)
 }
 
-func buildMCPBManifest(m CLIManifest) MCPBManifest {
+func buildMCPBManifest(dir string, m CLIManifest) MCPBManifest {
 	displayName := m.DisplayName
 	if displayName == "" {
 		displayName = m.APIName
@@ -175,7 +175,7 @@ func buildMCPBManifest(m CLIManifest) MCPBManifest {
 		// regeneration. A hardcoded "1.0.0" would defeat the host's
 		// "newer bundle available" prompt.
 		Version:     bundleVersion(m),
-		Description: manifestDescription(m, displayName),
+		Description: manifestDescription(dir, m, displayName),
 		Author:      MCPBAuthor{Name: "CLI Printing Press"},
 		License:     "Apache-2.0",
 		Server: MCPBServer{
@@ -213,11 +213,45 @@ func bundleVersion(m CLIManifest) string {
 // only falls back to a derived sentence when nothing better is available.
 // We deliberately keep this single-line — long_description is reserved for
 // multi-paragraph context, which we don't synthesize from spec data today.
-func manifestDescription(m CLIManifest, displayName string) string {
+//
+// Resolution order: the .printing-press.json description (canonical source
+// when the printing-press version that produced the CLI populates it) →
+// the existing manifest.json's description (preserves rich descriptions
+// baked by older codemods or hand-edits when .printing-press.json lacks
+// the field — e.g., library CLIs printed under v1.x predate the field) →
+// derived from displayName.
+func manifestDescription(dir string, m CLIManifest, displayName string) string {
 	if m.Description != "" {
 		return m.Description
 	}
+	if existing := readExistingManifestDescription(dir, displayName); existing != "" {
+		return existing
+	}
 	return displayName + " API surface as MCP tools."
+}
+
+// readExistingManifestDescription returns the description from an existing
+// manifest.json on disk, but only if it's a real description rather than
+// the derived "<displayName> API surface as MCP tools." default we'd
+// otherwise re-emit. Returning the derived form would defeat the
+// fallback chain by treating an old derived-default as "preserved
+// content" and never advancing past it.
+func readExistingManifestDescription(dir, displayName string) string {
+	data, err := os.ReadFile(filepath.Join(dir, MCPBManifestFilename))
+	if err != nil {
+		return ""
+	}
+	var existing struct {
+		Description string `json:"description"`
+	}
+	if err := json.Unmarshal(data, &existing); err != nil {
+		return ""
+	}
+	derivedDefault := displayName + " API surface as MCP tools."
+	if existing.Description == "" || existing.Description == derivedDefault {
+		return ""
+	}
+	return existing.Description
 }
 
 // buildMCPBEnv maps each declared auth env var into the launch spec's env
