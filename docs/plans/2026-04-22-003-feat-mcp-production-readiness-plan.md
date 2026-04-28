@@ -11,7 +11,7 @@ date: 2026-04-22
 
 Anthropic's April 22 2026 post "Building agents that reach production systems with MCP" argues that as production agents move to the cloud, MCP becomes the critical integration layer. Remote servers, intent-grouped tools, and code-orchestration for large surfaces are the three patterns that separate production-ready MCP from stdio-era toys.
 
-The Printing Press already generates an MCP server alongside every printed CLI, bundles skills + MCP as a plugin, and ships a meta-MCP (`megamcp`) that does library-level tool search. But the per-API MCP servers it emits today are stdio-only, one-tool-per-endpoint, and flat regardless of API size. This plan closes the three highest-leverage gaps. A follow-up plan will cover elicitation, MCP Apps, and OAuth/CIMD.
+The Printing Press already generates an MCP server alongside every printed CLI and bundles skills + MCP as a plugin. But the per-API MCP servers it emits today are stdio-only, one-tool-per-endpoint, and flat regardless of API size. This plan closes the three highest-leverage gaps. A follow-up plan will cover elicitation, MCP Apps, and OAuth/CIMD.
 
 ---
 
@@ -45,7 +45,7 @@ The scorer currently rewards `mcp_token_efficiency` (file size of tool definitio
 - Remote transport is HTTP streamable only. SSE-specific transport is deferred — the article treats HTTP streamable as the modern remote path.
 - No authentication beyond what exists today (env var / bearer / API key). OAuth, CIMD, and token-vault integration are deferred to a separate plan.
 - No elicitation (form/URL mode) or MCP Apps (interactive UI returns). Deferred to a separate plan.
-- No client-side patterns (tool search, programmatic tool calling). PP builds servers, not clients. `megamcp` already implements library-level tool search and is out of scope here.
+- No client-side patterns (tool search, programmatic tool calling). PP builds servers, not clients.
 - Intent-grouped tools are declared in the spec, not inferred automatically. Auto-inference from endpoint semantics is a future consideration.
 
 ### Deferred to Follow-Up Work
@@ -66,8 +66,7 @@ The scorer currently rewards `mcp_token_efficiency` (file size of tool definitio
 - `internal/spec/spec.go` — spec schema; needs a new `mcp:` section for transport + intents + code-orchestration config. The `ExtraCommands` precedent (hand-written cobra commands declared in the spec, documented in SKILL.md) is the right model: spec-declared, generator-respected.
 - `internal/pipeline/scorecard.go` — `SteinerScore` holds the dimension struct; add fields here. `MCPQuality` and `MCPTokenEff` already exist; preserve them and extend.
 - `internal/pipeline/mcp_size.go` — pattern for opt-in scoring with `scored bool` return; follow for new dimensions that only apply when MCP is emitted or the API surface is large.
-- `internal/megamcp/` — existing meta-MCP with library-level tool search, setup guide, activation. Out of scope to modify; in-scope to understand so new transport fields line up with `RegistryMCP.Transport` already declared in `types.go`.
-- `github.com/mark3labs/mcp-go v0.47.0` — pinned MCP SDK. Confirm HTTP streamable server support is available at this version before starting U1.
+- `github.com/mark3labs/mcp-go v0.47.0` — pinned MCP SDK in the per-CLI MCP template's `go.mod`. Confirm HTTP streamable server support is available at this version before starting U1.
 
 ### Institutional Learnings
 
@@ -222,7 +221,7 @@ Scorer adds three fields, all opt-in:
 - Intent syntax declares `steps: [ { endpoint, bind, capture } ]` and a `returns` expression. Binding expression format is decided during U2 prototyping; prefer the simplest dialect that covers the common case. Validator rejects references to undeclared endpoints, undeclared captures, or missing required endpoint params after binding is applied.
 - Intent handler composes existing generated endpoint client calls — no new HTTP code. The handler is a generator-owned Go function that the agent should not hand-modify.
 - `EndpointTools: hidden` hides raw endpoint tools from MCP registration but leaves the underlying Go endpoint handlers intact so intents can call them.
-- Each intent contributes to `tools-manifest.json` so `auth doctor`, scorecard, and megamcp discovery see them.
+- Each intent contributes to `tools-manifest.json` so `auth doctor`, `mcp-audit`, and the scorecard see them.
 
 **Patterns to follow:**
 - `internal/generator/vision_templates.go` — generator-owned higher-level code emission.
@@ -270,7 +269,6 @@ Scorer adds three fields, all opt-in:
 - Auth, error sanitization, and store-read paths continue to work uniformly for both tools since they delegate to the same endpoint handlers.
 
 **Patterns to follow:**
-- `internal/megamcp/metatools.go` for the tool-registration shape of `search_tools` — lift the pattern into the per-API template.
 - `internal/pipeline/reimplementation_check.go` — ensure `execute` handler passes the check (it calls the real client per endpoint).
 
 **Test scenarios:**
@@ -376,12 +374,12 @@ Scorer adds three fields, all opt-in:
 
 ## System-Wide Impact
 
-- **Interaction graph:** `internal/spec` -> `internal/generator` (templates + intent handler) -> published CLI's `internal/mcp` and `cmd/<api>-pp-mcp`. `internal/pipeline/scorecard.go` reads generator output. `internal/megamcp` already consumes `tools-manifest.json`; intent tools must appear there correctly so megamcp discovery works without change.
+- **Interaction graph:** `internal/spec` -> `internal/generator` (templates + intent handler) -> published CLI's `internal/mcp` and `cmd/<api>-pp-mcp`. `internal/pipeline/scorecard.go` reads generator output. `tools-manifest.json` must record intent tools correctly so `auth doctor` and `mcp-audit` continue to enumerate the full surface.
 - **Error propagation:** spec validation errors surface at `generate` time with line numbers. Runtime transport errors (HTTP bind failure) surface at MCP startup with an exit code. `<api>_execute` unknown endpoint returns a structured MCP error; no panics.
 - **State lifecycle risks:** none new — intent tools are stateless compositions over existing endpoint calls. Code-orchestration adds no server-side state.
 - **API surface parity:** CLI side is unchanged. All additions are on the MCP side. The `CLAUDE.md`/`AGENTS.md` principle "agents can do anything users can" is preserved; these changes *expand* what agents can do.
 - **Integration coverage:** U1's transport integration test and U2's intent end-to-end test must build and run the generated binary, not just unit-test the templates. U3's size test must measure actual emitted token count, not theoretical.
-- **Unchanged invariants:** `ExtraCommands`, `tools-manifest.json` schema backward compat, megamcp activation flow, the 7 quality gates, dogfood's reimplementation check, and per-CLI `doctor` behavior. All existing printed CLIs continue to build with zero spec changes.
+- **Unchanged invariants:** `ExtraCommands`, `tools-manifest.json` schema backward compat, the 7 quality gates, dogfood's reimplementation check, and per-CLI `doctor` behavior. All existing printed CLIs continue to build with zero spec changes.
 
 ---
 
@@ -415,5 +413,4 @@ Scorer adds three fields, all opt-in:
 - `internal/generator/templates/mcp_tools.go.tmpl` — current endpoint-mirror registration.
 - `internal/spec/spec.go` — spec schema; `ExtraCommands` is the precedent for additive optional blocks.
 - `internal/pipeline/scorecard.go`, `internal/pipeline/mcp_size.go` — scoring patterns to follow.
-- `internal/megamcp/` — library-level tool search already exists; stays untouched.
 - Cloudflare's MCP server — reference for code-orchestration (~2,500 endpoints in ~1K tokens).
