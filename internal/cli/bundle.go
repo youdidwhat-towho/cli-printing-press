@@ -19,6 +19,8 @@ func newBundleCmd() *cobra.Command {
 	var platform string
 	var skipBuild bool
 	var binaryPath string
+	var cliSkipBuild bool
+	var cliBinaryPath string
 
 	cmd := &cobra.Command{
 		Use:   "bundle <cli-dir>",
@@ -86,14 +88,27 @@ from another build pipeline.`,
 				}
 			}
 
+			// Optionally build/locate the companion CLI binary so the bundle
+			// includes both. siblingCLIPath() inside the MCP server then finds
+			// the CLI without the user needing PATH or a separate go install.
+			if cliBinaryPath == "" && manifest.CLIBinary != "" {
+				cliBinaryPath = pipeline.StagedMCPBinaryPath(cliDir, manifest.CLIBinary)
+			}
+			if !cliSkipBuild && manifest.CLIBinary != "" {
+				if err := buildMCPBBinary(cliDir, manifest.CLIBinary, cliBinaryPath, goos, goarch); err != nil {
+					return fmt.Errorf("building CLI binary: %w", err)
+				}
+			}
+
 			if output == "" {
 				output = pipeline.DefaultBundleOutputPath(cliDir, manifest.Name, goos, goarch)
 			}
 
 			if err := pipeline.BuildMCPBBundle(pipeline.BundleParams{
-				CLIDir:     cliDir,
-				BinaryPath: binaryPath,
-				OutputPath: output,
+				CLIDir:        cliDir,
+				BinaryPath:    binaryPath,
+				CLIBinaryPath: cliBinaryPath,
+				OutputPath:    output,
 			}); err != nil {
 				return fmt.Errorf("packaging bundle: %w", err)
 			}
@@ -105,8 +120,10 @@ from another build pipeline.`,
 
 	cmd.Flags().StringVar(&output, "output", "", "Output .mcpb path (default: <dir>/build/<name>-<os>-<arch>.mcpb)")
 	cmd.Flags().StringVar(&platform, "platform", "", "Target platform as <os>/<arch> (default: host)")
-	cmd.Flags().BoolVar(&skipBuild, "skip-build", false, "Skip go build; use the binary at --binary")
+	cmd.Flags().BoolVar(&skipBuild, "skip-build", false, "Skip go build for the MCP binary; use the binary at --binary")
 	cmd.Flags().StringVar(&binaryPath, "binary", "", "Pre-built MCP binary path (only meaningful with --skip-build)")
+	cmd.Flags().BoolVar(&cliSkipBuild, "cli-skip-build", false, "Skip go build for the companion CLI binary; use the binary at --cli-binary")
+	cmd.Flags().StringVar(&cliBinaryPath, "cli-binary", "", "Pre-built CLI binary path (only meaningful with --cli-skip-build)")
 	return cmd
 }
 
@@ -146,11 +163,24 @@ func autoBundleForHost(cliDir string, w io.Writer) {
 		fmt.Fprintf(w, "warning: could not build MCP binary for bundle: %v\n", err)
 		return
 	}
+	// Build the companion CLI binary too, so siblingCLIPath() inside the MCP
+	// finds it for novel-feature shell-out without the user needing PATH or
+	// a separate go install. Skipped when the manifest declares no cli_binary
+	// (older CLIs / generators that pre-date the dual-binary bundle).
+	cliBinaryPath := ""
+	if manifest.CLIBinary != "" {
+		cliBinaryPath = pipeline.StagedMCPBinaryPath(cliDir, manifest.CLIBinary)
+		if err := buildMCPBBinary(cliDir, manifest.CLIBinary, cliBinaryPath, runtime.GOOS, runtime.GOARCH); err != nil {
+			fmt.Fprintf(w, "warning: could not build companion CLI binary: %v\n", err)
+			return
+		}
+	}
 	output := pipeline.DefaultBundleOutputPath(cliDir, manifest.Name, runtime.GOOS, runtime.GOARCH)
 	if err := pipeline.BuildMCPBBundle(pipeline.BundleParams{
-		CLIDir:     cliDir,
-		BinaryPath: binaryPath,
-		OutputPath: output,
+		CLIDir:        cliDir,
+		BinaryPath:    binaryPath,
+		CLIBinaryPath: cliBinaryPath,
+		OutputPath:    output,
 	}); err != nil {
 		fmt.Fprintf(w, "warning: could not package MCPB bundle: %v\n", err)
 		return

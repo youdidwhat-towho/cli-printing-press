@@ -230,6 +230,31 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"backtick":  func() string { return "`" },
 		"kebab":     toKebab,
 		"humanName": naming.HumanName,
+		"envPrefix": naming.EnvPrefix,
+		// mcpToolName turns a NovelFeature.Command (e.g. "funding --who",
+		// "snapshot", "funding-trend") into a snake_case MCP tool identifier.
+		// Strips dashes and other non-identifier runs, collapses to underscores.
+		"mcpToolName": func(command string) string {
+			var b strings.Builder
+			lastUnder := false
+			for _, r := range command {
+				switch {
+				case (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9'):
+					b.WriteRune(r)
+					lastUnder = false
+				case r >= 'A' && r <= 'Z':
+					b.WriteRune(r + ('a' - 'A'))
+					lastUnder = false
+				default:
+					if !lastUnder && b.Len() > 0 {
+						b.WriteByte('_')
+						lastUnder = true
+					}
+				}
+			}
+			result := b.String()
+			return strings.TrimRight(result, "_")
+		},
 		"lookupEndpoint": func(resources map[string]spec.Resource, ref string) spec.Endpoint {
 			e, _ := lookupEndpointForTemplate(resources, ref)
 			return e
