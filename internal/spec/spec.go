@@ -7,6 +7,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
 	"gopkg.in/yaml.v3"
 )
 
@@ -112,11 +113,10 @@ func (s *APISpec) IsSynthetic() bool {
 }
 
 // EffectiveDisplayName returns the human-readable brand name for this CLI.
-// If the author set DisplayName explicitly (preserving capitalization like
-// "Company GOAT", "Cal.com", "PokéAPI"), that wins. Otherwise we title-case
-// Name as a sensible default. Used by the MCP server's protocol-level name,
-// the MCPB manifest's display_name field, and any other surface that needs
-// a friendly identity instead of the kebab-case slug.
+// Explicit DisplayName wins (preserves "Company GOAT", "Cal.com", "PokéAPI"
+// shape); otherwise we title-case Name. Used by the MCP server's protocol
+// name, the MCPB manifest, and any surface that wants a friendly identity
+// instead of the kebab-case slug.
 func (s *APISpec) EffectiveDisplayName() string {
 	if s == nil {
 		return ""
@@ -124,14 +124,7 @@ func (s *APISpec) EffectiveDisplayName() string {
 	if strings.TrimSpace(s.DisplayName) != "" {
 		return s.DisplayName
 	}
-	parts := strings.Split(s.Name, "-")
-	for i, p := range parts {
-		if p == "" {
-			continue
-		}
-		parts[i] = strings.ToUpper(p[:1]) + p[1:]
-	}
-	return strings.Join(parts, " ")
+	return naming.HumanName(s.Name)
 }
 
 func (s *APISpec) EffectiveHTTPTransport() string {

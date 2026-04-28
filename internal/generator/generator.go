@@ -229,10 +229,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"isGraphQL": isGraphQLSpec,
 		"backtick":  func() string { return "`" },
 		"kebab":     toKebab,
-		"humanName": func(s string) string {
-			// "steam-web" → "Steam Web", "notion" → "Notion"
-			return cases.Title(language.English).String(strings.ReplaceAll(s, "-", " "))
-		},
+		"humanName": naming.HumanName,
 		"lookupEndpoint": func(resources map[string]spec.Resource, ref string) spec.Endpoint {
 			e, _ := lookupEndpointForTemplate(resources, ref)
 			return e
@@ -713,7 +710,7 @@ func (g *Generator) proseName() string {
 	if g.Narrative != nil && strings.TrimSpace(g.Narrative.DisplayName) != "" {
 		return strings.TrimSpace(g.Narrative.DisplayName)
 	}
-	return cases.Title(language.English).String(strings.ReplaceAll(g.Spec.Name, "-", " "))
+	return naming.HumanName(g.Spec.Name)
 }
 
 func hasAuth(auth spec.AuthConfig) bool {

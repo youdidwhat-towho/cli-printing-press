@@ -60,7 +60,7 @@ from another build pipeline.`,
 			if err != nil {
 				return &ExitError{
 					Code: ExitInputError,
-					Err:  fmt.Errorf("manifest.json missing — has this CLI been generated yet? %w", err),
+					Err:  fmt.Errorf("reading manifest.json (run `printing-press generate` first): %w", err),
 				}
 			}
 			var manifest pipeline.MCPBManifest
@@ -77,7 +77,7 @@ from another build pipeline.`,
 			}
 
 			if binaryPath == "" {
-				binaryPath = filepath.Join(cliDir, "build", "stage", "bin", manifest.Name)
+				binaryPath = pipeline.StagedMCPBinaryPath(cliDir, manifest.Name)
 			}
 
 			if !skipBuild {
@@ -110,13 +110,10 @@ from another build pipeline.`,
 	return cmd
 }
 
-// autoBundleForHost packages a host-platform .mcpb after `printing-press
-// generate` produces a CLI directory. Best-effort: silently skips when the
-// module isn't ready to build (no go.sum, no manifest, etc.), since the
-// manifest.json on disk is the durable source-of-truth and the user can
-// run `printing-press bundle <dir>` later. We only emit a warning when a
-// build that *should* have worked fails, so noisy expected skips (e.g.,
-// generate --validate=false leaving go.sum empty) don't pollute logs.
+// autoBundleForHost packages a host-platform .mcpb after generate.
+// Best-effort: skips silently when the module isn't ready to build (no
+// go.sum, no manifest), warns only on real build failures. Users can
+// always re-run via `printing-press bundle <dir>`.
 func autoBundleForHost(cliDir string, w io.Writer) {
 	manifestPath := filepath.Join(cliDir, pipeline.MCPBManifestFilename)
 	manifestData, err := os.ReadFile(manifestPath)
@@ -137,7 +134,7 @@ func autoBundleForHost(cliDir string, w io.Writer) {
 	if _, err := os.Stat(filepath.Join(cliDir, "go.sum")); err != nil {
 		return
 	}
-	binaryPath := filepath.Join(cliDir, "build", "stage", "bin", manifest.Name)
+	binaryPath := pipeline.StagedMCPBinaryPath(cliDir, manifest.Name)
 	if err := buildMCPBBinary(cliDir, manifest.Name, binaryPath, runtime.GOOS, runtime.GOARCH); err != nil {
 		fmt.Fprintf(w, "warning: could not build MCP binary for bundle: %v\n", err)
 		return

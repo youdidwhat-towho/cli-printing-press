@@ -46,6 +46,11 @@ normalize_json() {
         | .printing_press_version = "<PRINTING_PRESS_VERSION>"
       ' "$file" | normalize_text
       ;;
+    */manifest.json)
+      # MCPB manifest version stamps the printing-press release; normalize
+      # so the golden doesn't drift on every release bump.
+      jq -S '.version = "<PRINTING_PRESS_VERSION>"' "$file" | normalize_text
+      ;;
     *)
       jq -S . "$file" | normalize_text
       ;;

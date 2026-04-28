@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -45,7 +46,7 @@ func BuildMCPBBundle(params BundleParams) error {
 		return fmt.Errorf("parsing manifest: %w", err)
 	}
 	if manifest.Server.EntryPoint == "" {
-		return fmt.Errorf("manifest server.entry_point is empty")
+		return errors.New("manifest server.entry_point is empty")
 	}
 
 	binStat, err := os.Stat(params.BinaryPath)
@@ -65,7 +66,7 @@ func BuildMCPBBundle(params BundleParams) error {
 	if err != nil {
 		return fmt.Errorf("creating bundle file: %w", err)
 	}
-	defer out.Close()
+	defer func() { _ = out.Close() }()
 
 	zw := zip.NewWriter(out)
 	if err := writeZipEntry(zw, MCPBManifestFilename, manifestData, 0o644); err != nil {
@@ -79,7 +80,10 @@ func BuildMCPBBundle(params BundleParams) error {
 		_ = zw.Close()
 		return fmt.Errorf("writing binary into bundle: %w", err)
 	}
-	return zw.Close()
+	if err := zw.Close(); err != nil {
+		return fmt.Errorf("finalizing bundle archive: %w", err)
+	}
+	return nil
 }
 
 func writeZipEntry(zw *zip.Writer, name string, data []byte, mode os.FileMode) error {
@@ -105,4 +109,12 @@ func DefaultBundleOutputPath(cliDir, mcpBinary, goos, goarch string) string {
 	}
 	name := fmt.Sprintf("%s-%s-%s.mcpb", mcpBinary, goos, goarch)
 	return filepath.Join(cliDir, "build", name)
+}
+
+// StagedMCPBinaryPath returns the conventional path where bundle's
+// pre-zip staging copies of the MCP binary live (cliDir/build/stage/bin/).
+// Exposed so internal/cli callers don't reach into pipeline internals
+// to construct the path themselves.
+func StagedMCPBinaryPath(cliDir, mcpBinary string) string {
+	return filepath.Join(cliDir, "build", "stage", "bin", mcpBinary)
 }

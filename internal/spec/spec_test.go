@@ -688,12 +688,11 @@ resources:
 		assert.Equal(t, "x", params[0].Name)
 	})
 
-	t.Run("body param with same name as placeholder still triggers promotion path", func(t *testing.T) {
-		// If the author declared a body param called "id" AND the path has {id},
-		// today's behavior skips. After fix: still skip (the body param is the
-		// authoritative declaration), but downstream code must handle the URL
-		// substitution another way. This test pins existing behavior so we don't
-		// silently change it.
+	t.Run("body param with same name as placeholder is not promoted", func(t *testing.T) {
+		// When the author declared "id" in body AND the path has {id},
+		// the body declaration is authoritative — we don't add a phantom
+		// path param. Pins this behavior so the promotion path doesn't
+		// accidentally widen.
 		input := `
 name: demo
 base_url: http://x

@@ -284,15 +284,8 @@ func handleContext(_ context.Context, _ mcplib.CallToolRequest) (*mcplib.CallToo
 		"description": "Purpose-built fixture for golden generation coverage.",
 		"archetype":   "project-management",
 		"tool_count":  7,
-		// Tool surface boundary: agents reading this output should treat the
-		// resources block below as the authoritative list of MCP-callable
-		// endpoints. cli_only_capabilities (when present) describes hand-
-		// written features that ship in the companion printing-press-golden-pp-cli binary
-		// but are NOT exposed as MCP tools today; an agent must shell out to
-		// the CLI to use them, or wait for a future generator pass that
-		// surfaces them as tools. This note exists because Claude Desktop
-		// users have read prior context outputs and inferred the MCP could
-		// invoke CLI-only commands like `snapshot` or `funding` directly.
+		// tool_surface tells agents which surface a capability lives on so
+		// they don't try to invoke cli_only_capabilities through MCP.
 		"tool_surface": "MCP exposes the endpoints listed under `resources` (plus sync/search/sql/context utilities when present). Items under `cli_only_capabilities` require running the companion printing-press-golden-pp-cli binary; the MCP cannot invoke them.",
 		"auth": map[string]any{
 			"type": "api_key",

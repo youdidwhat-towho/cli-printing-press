@@ -285,11 +285,9 @@ func WriteManifestForGenerate(p GenerateManifestParams) error {
 	if err := WriteCLIManifest(p.OutputDir, m); err != nil {
 		return err
 	}
-	// Emit MCPB manifest.json next to .printing-press.json so the bundle
-	// build pipeline (and humans reading the CLI dir) finds it co-located
-	// with the MCP source. Silently no-ops for cli-only readiness or
-	// missing MCP binary — both are non-error states.
-	return WriteMCPBManifest(p.OutputDir)
+	// Emit MCPB manifest.json next to .printing-press.json. Pass the
+	// in-memory struct so we don't re-read the file we just wrote.
+	return WriteMCPBManifestFromStruct(p.OutputDir, m)
 }
 
 // detectSpecFormat examines the raw spec bytes and returns a format

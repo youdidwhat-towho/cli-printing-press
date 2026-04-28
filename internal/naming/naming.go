@@ -5,6 +5,8 @@ import (
 	"strings"
 	"unicode"
 
+	"golang.org/x/text/cases"
+	"golang.org/x/text/language"
 	"golang.org/x/text/unicode/norm"
 )
 
@@ -28,6 +30,17 @@ func LegacyCLI(name string) string {
 
 func ValidationBinary(name string) string {
 	return CLI(name) + "-validation"
+}
+
+// HumanName turns a kebab-case slug into a space-separated title-cased
+// string ("steam-web" → "Steam Web", "company-goat" → "Company Goat").
+// Multi-byte rune safe via cases.Title; previous hand-rolled callers
+// using `s[:1]` would slice mid-codepoint on accented inputs.
+func HumanName(slug string) string {
+	if slug == "" {
+		return ""
+	}
+	return cases.Title(language.English).String(strings.ReplaceAll(slug, "-", " "))
 }
 
 // EnvPrefix returns an ASCII-only shell-safe environment variable prefix.

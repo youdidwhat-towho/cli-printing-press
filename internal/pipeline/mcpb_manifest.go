@@ -7,7 +7,25 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/mvanhorn/cli-printing-press/v2/internal/version"
 )
+
+// MCPB-bundle constants. Promoted from string literals so a typo here can't
+// silently flip semantics — particularly authRequiresCredential, where a
+// renamed auth type would otherwise default to "not required."
+const (
+	mcpbServerTypeBinary = "binary"
+	mcpbVarTypeString    = "string"
+
+	authTypeAPIKey      = "api_key"
+	authTypeBearerToken = "bearer_token"
+	authTypeOAuth2      = "oauth2"
+)
+
+// defaultMCPBPlatforms is the set of host platforms our generated bundles
+// target. Matches goreleaser's default Go cross-compile matrix.
+var defaultMCPBPlatforms = []string{"darwin", "linux", "win32"}
 
 // MCPBManifestFilename is the file the host (Claude Desktop, Claude Code,
 // MCP for Windows, future MCPB-aware clients) reads when installing a
@@ -96,18 +114,11 @@ type MCPBCompat struct {
 	Platforms     []string `json:"platforms,omitempty"`
 }
 
-// WriteMCPBManifest emits manifest.json for a published CLI directory.
-// Reads .printing-press.json to drive the manifest contents — every field
-// the manifest needs already lives there after WriteCLIManifest runs.
-//
-// Skips emission silently in three cases:
-//   - No .printing-press.json present (caller is using us outside a real CLI dir)
-//   - MCPBinary empty (the spec didn't generate an MCP server)
-//   - MCPReady == "cli-only" (composed-auth flows where MCP can't stand alone)
-//
-// The third case is the same gate the prior smithery.yaml emission used; we
-// preserve it because cli-only readiness means a Claude Desktop user
-// installing the bundle alone would get no working tools.
+// WriteMCPBManifest emits manifest.json for a published CLI directory by
+// reading .printing-press.json. Skips silently when the CLI dir has no
+// manifest, no MCP binary, or cli-only readiness — none of those should
+// produce a draggable .mcpb. Callers that already have the CLIManifest
+// in memory should use WriteMCPBManifestFromStruct to avoid the re-read.
 func WriteMCPBManifest(dir string) error {
 	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
 	if err != nil {
@@ -117,20 +128,22 @@ func WriteMCPBManifest(dir string) error {
 	if err := json.Unmarshal(data, &m); err != nil {
 		return fmt.Errorf("parsing manifest for MCPB: %w", err)
 	}
+	return WriteMCPBManifestFromStruct(dir, m)
+}
+
+// WriteMCPBManifestFromStruct is the in-memory variant of WriteMCPBManifest.
+// Use it when the CLIManifest was just built and writing it back to disk
+// only to re-read it would be wasted work.
+func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
 	if m.MCPBinary == "" || m.MCPReady == "cli-only" {
 		return nil
 	}
-
-	manifest := buildMCPBManifest(m)
-	// SetEscapeHTML(false) keeps `>=1.0.0` readable in the compatibility
-	// block instead of writing `>=1.0.0`. The manifest is consumed by
-	// JSON-aware MCPB hosts, not embedded in HTML, so HTML-safe escaping
-	// only adds noise.
+	// SetEscapeHTML(false) so `>=1.0.0` stays readable instead of `>=1.0.0`.
 	var buf bytes.Buffer
 	enc := json.NewEncoder(&buf)
 	enc.SetEscapeHTML(false)
 	enc.SetIndent("", "  ")
-	if err := enc.Encode(manifest); err != nil {
+	if err := enc.Encode(buildMCPBManifest(m)); err != nil {
 		return fmt.Errorf("marshaling MCPB manifest: %w", err)
 	}
 	return os.WriteFile(filepath.Join(dir, MCPBManifestFilename), buf.Bytes(), 0o644)
@@ -142,16 +155,20 @@ func buildMCPBManifest(m CLIManifest) MCPBManifest {
 		displayName = m.APIName
 	}
 
-	manifest := MCPBManifest{
+	return MCPBManifest{
 		ManifestVersion: MCPBManifestVersion,
 		Name:            m.MCPBinary,
 		DisplayName:     displayName,
-		Version:         "1.0.0",
-		Description:     manifestDescription(m, displayName),
-		Author:          MCPBAuthor{Name: "CLI Printing Press"},
-		License:         "Apache-2.0",
+		// Bundle version tracks the printing-press release that produced
+		// it so Claude Desktop's update detection sees a fresh value on
+		// regeneration. A hardcoded "1.0.0" would defeat the host's
+		// "newer bundle available" prompt.
+		Version:     bundleVersion(m),
+		Description: manifestDescription(m, displayName),
+		Author:      MCPBAuthor{Name: "CLI Printing Press"},
+		License:     "Apache-2.0",
 		Server: MCPBServer{
-			Type:       "binary",
+			Type:       mcpbServerTypeBinary,
 			EntryPoint: "bin/" + m.MCPBinary,
 			MCPConfig: MCPBLaunchSpec{
 				Command: "${__dirname}/bin/" + m.MCPBinary,
@@ -162,11 +179,23 @@ func buildMCPBManifest(m CLIManifest) MCPBManifest {
 		UserConfig: buildMCPBUserConfig(m),
 		Compatibility: &MCPBCompat{
 			ClaudeDesktop: ">=1.0.0",
-			Platforms:     []string{"darwin", "linux", "win32"},
+			Platforms:     defaultMCPBPlatforms,
 		},
 	}
+}
 
-	return manifest
+// bundleVersion returns a semver-shaped version for the manifest. Prefers
+// the manifest's recorded printing-press version (so two bundles built
+// from different generator releases differ), falls back to the linker-
+// stamped version when the manifest field is empty (older runs).
+func bundleVersion(m CLIManifest) string {
+	if m.PrintingPressVersion != "" {
+		return m.PrintingPressVersion
+	}
+	if version.Version != "" {
+		return version.Version
+	}
+	return "0.0.0"
 }
 
 // manifestDescription prefers the catalog/spec description verbatim and
@@ -208,8 +237,8 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 	vars := make(map[string]MCPBVar, len(m.AuthEnvVars))
 	for _, name := range m.AuthEnvVars {
 		vars[userConfigKey(name)] = MCPBVar{
-			Type:        "string",
-			Title:       envVarTitle(name),
+			Type:        mcpbVarTypeString,
+			Title:       name,
 			Description: envVarDescription(m, name, required),
 			Sensitive:   true,
 			Required:    required,
@@ -218,26 +247,15 @@ func buildMCPBUserConfig(m CLIManifest) map[string]MCPBVar {
 	return vars
 }
 
-// userConfigKey lowercases the env-var name so manifest.json's user_config
-// keys match the conventional `${user_config.foo_bar}` substitution syntax.
-// Hosts treat the key as a stable identifier, so we lowercase consistently.
+// userConfigKey lowercases the env var so manifest user_config keys match
+// the `${user_config.foo_bar}` substitution syntax in mcp_config.env.
 func userConfigKey(envVar string) string {
 	return strings.ToLower(envVar)
 }
 
-// envVarTitle is the field label shown in Claude Desktop's install dialog.
-// We display the env-var name verbatim because that's what users will see
-// elsewhere (in CLI auth setup, in error messages, in config files), and
-// keeping a single name across surfaces avoids "what is FOO_TOKEN vs the
-// 'Foo Token' field" confusion.
-func envVarTitle(envVar string) string {
-	return envVar
-}
-
-// envVarDescription writes one sentence the user will see under the input
-// field. Includes the registration URL when we know it — that's the
-// difference between "fill this in" and "I have no idea where to get this
-// value." For optional auth types we say so explicitly.
+// envVarDescription is the help text under each user_config field. The
+// registration URL (when we have one) is what makes the difference between
+// "fill this in" and "I don't know where to get this value."
 func envVarDescription(m CLIManifest, envVar string, required bool) string {
 	var b strings.Builder
 	if !required {
@@ -261,14 +279,12 @@ func envVarDescription(m CLIManifest, envVar string, required bool) string {
 }
 
 // authRequiresCredential decides whether a user_config field is required.
-// api_key and bearer_token gate every API call on the credential, so
-// skipping the prompt produces a nonfunctional install. cookie/composed
-// flows have unauth fallbacks for some tools, so we let the user skip and
-// hit the parts that work without credentials. Empty/none auth types
-// produce no env vars in the first place, so the value here is moot.
+// api_key/bearer_token/oauth2 gate every API call on the credential.
+// cookie/composed flows have unauth fallbacks for some tools, so we let
+// the user skip and hit the parts that work without credentials.
 func authRequiresCredential(authType string) bool {
 	switch authType {
-	case "api_key", "bearer_token", "oauth2":
+	case authTypeAPIKey, authTypeBearerToken, authTypeOAuth2:
 		return true
 	default:
 		return false
