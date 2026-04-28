@@ -1409,6 +1409,66 @@ template produces correct auth from the start.
 APIs, public data feeds), don't invent auth. The signal must come from research — not
 from guessing. No research mention of auth = no enrichment.
 
+#### Tagging endpoints `no_auth: true` (composed/cookie auth APIs)
+
+For APIs whose `auth.type` is `cookie`, `composed`, or `session_handshake` — i.e.,
+auth that requires interactive setup (browser cookie capture, multi-step token
+exchange) — audit each endpoint individually for whether it actually needs
+authentication. The default of `no_auth: false` means "auth required"; flip it to
+`no_auth: true` for endpoints that work without credentials.
+
+Typical unauthenticated endpoints worth tagging:
+
+- **Auth-flow primitives:** login, registration, password-reset, email-confirm,
+  refresh-token, OAuth callback. The user isn't authenticated when calling these —
+  they ARE the auth flow.
+- **Public discovery:** store/location finder, menu browse, public catalog,
+  category listing, public search, public product detail.
+- **Health/metadata:** health checks, version probes, capability flags, sitemap.
+
+Why this matters: the `no_auth` count drives downstream decisions. Specifically,
+a composed-auth API with zero `no_auth: true` tags previously got labeled
+`mcp_ready: cli-only` and was suppressed from MCPB manifest emission, which
+broke the Claude Desktop install path entirely. The current generator
+(post-2.5) ships a manifest regardless, but the readiness label, scorecard
+breadth dimension, and SKILL.md prose all read better when the count
+reflects reality.
+
+If unsure whether an endpoint requires auth, the safe default is `no_auth: false`
+(auth required) — over-tagging can mislead users to expect tools that won't work.
+
+**Example for a composed-auth pizza-ordering API:**
+
+```yaml
+resources:
+  account:
+    endpoints:
+      register:
+        method: POST
+        path: /account/register
+        no_auth: true   # registering means you're not yet authenticated
+      login:
+        method: POST
+        path: /account/login
+        no_auth: true   # the auth flow itself
+      profile:
+        method: GET
+        path: /account/profile
+        # no_auth defaults to false — needs auth to view your own profile
+  stores:
+    endpoints:
+      find:
+        method: GET
+        path: /stores/near
+        no_auth: true   # public store finder
+  cart:
+    endpoints:
+      checkout:
+        method: POST
+        path: /cart/checkout
+        # no_auth defaults to false — placing an order needs auth
+```
+
 ### Lock and Generate
 
 Before running any generate command, acquire the build lock:

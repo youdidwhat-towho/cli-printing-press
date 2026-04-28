@@ -542,25 +542,30 @@ func TestArchiveRunArtifactsSkipsMissingDiscovery(t *testing.T) {
 }
 
 func TestComputeMCPReady(t *testing.T) {
+	// composed/cookie auth always reports "partial" — the older `if
+	// publicTools > 0` gate produced false-negative "cli-only" labels for
+	// CLIs whose spec authors hadn't yet tagged endpoints with `no_auth:
+	// true`. Pagliacci-pizza is the canonical case: composed auth, 67
+	// registered tools (account_register, account_login, store/menu
+	// lookups all unauthenticated), but mcp_public_tool_count was 0 so
+	// the readiness label was wrong and downstream manifest emission
+	// was suppressed.
 	tests := []struct {
-		name        string
-		authType    string
-		publicTools int
-		want        string
+		name     string
+		authType string
+		want     string
 	}{
-		{"none", "none", 0, "full"},
-		{"api_key", "api_key", 0, "full"},
-		{"bearer_token", "bearer_token", 0, "full"},
-		{"oauth2 defaults to full", "oauth2", 0, "full"},
-		{"cookie with public tools", "cookie", 3, "partial"},
-		{"cookie no public tools", "cookie", 0, "cli-only"},
-		{"composed with public tools", "composed", 5, "partial"},
-		{"composed no public tools", "composed", 0, "cli-only"},
-		{"empty auth type", "", 0, "full"},
+		{"none", "none", "full"},
+		{"api_key", "api_key", "full"},
+		{"bearer_token", "bearer_token", "full"},
+		{"oauth2 defaults to full", "oauth2", "full"},
+		{"cookie always partial", "cookie", "partial"},
+		{"composed always partial", "composed", "partial"},
+		{"empty auth type", "", "full"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := computeMCPReady(tt.authType, tt.publicTools)
+			got := computeMCPReady(tt.authType)
 			assert.Equal(t, tt.want, got)
 		})
 	}
@@ -575,14 +580,23 @@ func TestWriteMCPBManifest(t *testing.T) {
 		assert.True(t, os.IsNotExist(statErr))
 	})
 
-	t.Run("cli-only readiness → skipped (host can't use bundle alone)", func(t *testing.T) {
+	t.Run("cli-only readiness still emits manifest", func(t *testing.T) {
+		// Earlier behavior: cli-only readiness skipped manifest emission
+		// entirely, on the theory that "the bundle won't work standalone."
+		// In practice that suppressed bundles for composed/cookie-auth CLIs
+		// with unauthenticated tools (registration, login, public lookups).
+		// The manifest now ships regardless; user_config's required flag
+		// communicates auth-required-or-optional. See Pagliacci-pizza.
 		dir := t.TempDir()
-		m := CLIManifest{MCPBinary: "test-pp-mcp", MCPReady: "cli-only"}
-		writeManifest(t, dir, m)
+		writeManifest(t, dir, CLIManifest{
+			APIName:   "test",
+			MCPBinary: "test-pp-mcp",
+			MCPReady:  "cli-only",
+		})
 
 		require.NoError(t, WriteMCPBManifest(dir))
 		_, statErr := os.Stat(filepath.Join(dir, MCPBManifestFilename))
-		assert.True(t, os.IsNotExist(statErr))
+		require.NoError(t, statErr, "cli-only readiness should NOT skip manifest emission")
 	})
 
 	t.Run("missing MCP binary → skipped", func(t *testing.T) {

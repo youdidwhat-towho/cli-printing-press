@@ -127,10 +127,16 @@ type MCPBCompat struct {
 }
 
 // WriteMCPBManifest emits manifest.json for a published CLI directory by
-// reading .printing-press.json. Skips silently when the CLI dir has no
-// manifest, no MCP binary, or cli-only readiness — none of those should
-// produce a draggable .mcpb. Callers that already have the CLIManifest
-// in memory should use WriteMCPBManifestFromStruct to avoid the re-read.
+// reading .printing-press.json. Skips silently only when the CLI dir has
+// no .printing-press.json or no MCP binary — every other CLI ships a
+// manifest, including composed/cookie-auth ones whose MCPReady label
+// says "partial" or "cli-only". The user_config block already conveys
+// auth-required-or-optional (per authRequiresCredential), so withholding
+// the manifest from cli-only readiness CLIs only hurt users who could
+// otherwise install the bundle and use any unauthenticated tools.
+//
+// Callers that already have the CLIManifest in memory should use
+// WriteMCPBManifestFromStruct to avoid the re-read.
 func WriteMCPBManifest(dir string) error {
 	data, err := os.ReadFile(filepath.Join(dir, CLIManifestFilename))
 	if err != nil {
@@ -147,7 +153,7 @@ func WriteMCPBManifest(dir string) error {
 // Use it when the CLIManifest was just built and writing it back to disk
 // only to re-read it would be wasted work.
 func WriteMCPBManifestFromStruct(dir string, m CLIManifest) error {
-	if m.MCPBinary == "" || m.MCPReady == "cli-only" {
+	if m.MCPBinary == "" {
 		return nil
 	}
 	// SetEscapeHTML(false) so `>=1.0.0` stays readable instead of `>=1.0.0`.

@@ -85,7 +85,7 @@ func WriteToolsManifest(dir string, parsed *spec.APISpec) error {
 	}
 
 	total, public := parsed.CountMCPTools()
-	mcpReady := computeMCPReady(parsed.Auth.Type, public)
+	mcpReady := computeMCPReady(parsed.Auth.Type)
 
 	// For cookie/composed auth, only include NoAuth endpoints.
 	cookieOrComposed := parsed.Auth.Type == "cookie" || parsed.Auth.Type == "composed"

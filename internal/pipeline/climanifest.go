@@ -158,17 +158,28 @@ func specChecksum(path string) (string, error) {
 	return "sha256:" + hex.EncodeToString(h[:]), nil
 }
 
-// computeMCPReady determines the MCP readiness level based on the auth type
-// and the public/total tool split.
-func computeMCPReady(authType string, publicTools int) string {
+// computeMCPReady determines the MCP readiness label for scorecard /
+// SKILL prose. It does NOT gate manifest emission — that decision lives
+// in WriteMCPBManifestFromStruct and is purely "do we have an MCP binary
+// to ship?". The label exists to set user expectations: full = every
+// tool works without per-tool auth setup; partial = some tools work
+// without credentials, others need auth provided through the companion
+// CLI's flow (composed, cookie). cli-only is reserved for the
+// degenerate case of no MCP tools at all and is rarely set in practice.
+//
+// Why no `publicTools > 0` gate for composed/cookie any more: the count
+// relies on spec authors tagging endpoints `no_auth: true`, which most
+// generated specs don't audit carefully. A composed-auth CLI with zero
+// no_auth tags was previously labeled cli-only even when many endpoints
+// (registration, login, public discovery) actually work without auth.
+// Defaulting to "partial" matches the typical reality and avoids
+// suppressing manifest emission downstream.
+func computeMCPReady(authType string) string {
 	switch authType {
 	case "none", "api_key", "bearer_token":
 		return "full"
 	case "cookie", "composed":
-		if publicTools > 0 {
-			return "partial"
-		}
-		return "cli-only"
+		return "partial"
 	default:
 		return "full"
 	}
@@ -182,7 +193,7 @@ func populateMCPMetadata(m *CLIManifest, parsed *spec.APISpec) {
 	m.MCPBinary = naming.MCP(parsed.Name)
 	m.MCPToolCount = total
 	m.MCPPublicToolCount = public
-	m.MCPReady = computeMCPReady(parsed.Auth.Type, public)
+	m.MCPReady = computeMCPReady(parsed.Auth.Type)
 	m.AuthType = parsed.Auth.Type
 	m.AuthEnvVars = parsed.Auth.EnvVars
 	m.AuthKeyURL = parsed.Auth.KeyURL
