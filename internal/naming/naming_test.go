@@ -61,13 +61,11 @@ func TestEnvPrefix(t *testing.T) {
 		"food & dining": "FOOD_DINING",
 		"1password":     "API_1PASSWORD",
 		"!!!":           "API",
-		// Fused-diacritic Latin and non-Latin scripts get transliterated
-		// via Unidecode rather than dropped on the floor.
-		"Großhandel": "GROSSHANDEL",
-		"Łódź":       "LODZ",
-		"Ørsted":     "ORSTED",
-		"東京":         "DONG_JING",
-		"русский":    "RUSSKII",
+		"Großhandel":    "GROSSHANDEL",
+		"Łódź":          "LODZ",
+		"Ørsted":        "ORSTED",
+		"東京":            "DONG_JING",
+		"русский":       "RUSSKII",
 	}
 
 	for input, want := range tests {
@@ -81,20 +79,17 @@ func TestASCIIFold(t *testing.T) {
 	tests := map[string]string{
 		"":              "",
 		"already-ascii": "already-ascii",
-		// Precomposed accents (NFD-decomposable):
+		// Precomposed accents:
 		"Pokémon": "Pokemon",
 		"naïve":   "naive",
 		"café":    "cafe",
-		// Fused-diacritic Latin (non-decomposable):
+		// Fused-diacritic Latin:
 		"Großhandel":   "Grosshandel",
 		"Łódź":         "Lodz",
 		"Encyclopædia": "Encyclopaedia",
 		"Ørsted":       "Orsted",
 		"Þingvellir":   "Thingvellir",
-		// Non-Latin scripts get reasonable ASCII transliterations from
-		// the Unidecode tables — these are approximations, not perfect
-		// romanizations, and the specific output is what the canonical
-		// Text::Unidecode table produces.
+		// Non-Latin scripts:
 		"東京":      "Dong Jing ",
 		"русский": "russkii",
 		"Δelta":   "Delta",
@@ -109,11 +104,9 @@ func TestASCIIFold(t *testing.T) {
 
 func TestSnakeIdentifier(t *testing.T) {
 	tests := map[string]string{
-		"funding --who": "funding_who",
-		"FUNDING-TREND": "funding_trend",
-		"already_snake": "already_snake",
-		// Non-ASCII content folds before snake-casing instead of getting
-		// dropped (which would produce "" or partial identifiers).
+		"funding --who":     "funding_who",
+		"FUNDING-TREND":     "funding_trend",
+		"already_snake":     "already_snake",
 		"Pokémon list":      "pokemon_list",
 		"Großhandel--query": "grosshandel_query",
 		"русский_kpi":       "russkii_kpi",

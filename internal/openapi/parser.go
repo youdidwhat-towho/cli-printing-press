@@ -2674,13 +2674,6 @@ func toKebabCase(input string) string {
 }
 
 func cleanSpecName(title string) string {
-	// Transliterate Unicode to ASCII before any tokenizing or
-	// kebab-casing. Without this, the slug retains accents, fused-
-	// diacritic Latin (ø, ß, æ, ł), and non-Latin scripts (CJK,
-	// Cyrillic, Greek), which then drift through to directory names,
-	// binary names, Go import paths, and Cobra command paths —
-	// producing spurious cmd dirs on regen and breaking import paths
-	// on case-folding filesystems. See naming.ASCIIFold.
 	title = naming.ASCIIFold(title)
 	title = strings.ToLower(strings.TrimSpace(title))
 	if title == "" {
@@ -2689,9 +2682,9 @@ func cleanSpecName(title string) string {
 
 	title = strings.ReplaceAll(title, "open api", " ")
 
-	// Strip apostrophes so brand names like "Domino's" become "dominos" not "domino-s"
+	// Strip apostrophes so brand names like "Domino's" become "dominos" not
+	// "domino-s". Smart-quote U+2019 already folds to ASCII via ASCIIFold above.
 	title = strings.ReplaceAll(title, "'", "")
-	title = strings.ReplaceAll(title, "\u2019", "") // Unicode right single quotation mark
 
 	var normalized strings.Builder
 	lastSpace := true

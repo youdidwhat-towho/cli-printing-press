@@ -423,25 +423,17 @@ func TestCleanSpecName(t *testing.T) {
 		{title: "Domino\u2019s Pizza API", want: "dominos-pizza"},
 		// Multiple apostrophes
 		{title: "Rock'n'Roll API", want: "rocknroll"},
-		// Unicode-to-ASCII transliteration via naming.ASCIIFold (Unidecode).
-		// Without it, accents leak into directory names, Go import paths,
-		// and Cobra commands. See the asciiFold/Unicode coverage in
-		// internal/naming/naming_test.go for the underlying transliteration
-		// table; these cases verify the cleanSpecName pipeline downstream
-		// of the fold (lowercase, noise-word filter, kebab-casing).
-		// Precomposed accents (NFD-decomposable):
+		// Precomposed accents:
 		{title: "Pok\u00e9mon API", want: "pokemon"},
 		{title: "Caf\u00e9 Reservations", want: "cafe-reservations"},
 		{title: "Na\u00efve Bayes API", want: "naive-bayes"},
-		// Fused-diacritic Latin (non-decomposable):
+		// Fused-diacritic Latin:
 		{title: "Gro\u00dfhandel API", want: "grosshandel"},
 		{title: "Encyclop\u00e6dia API", want: "encyclopaedia"},
 		{title: "\u00d8rsted Energy", want: "orsted-energy"},
 		{title: "\u0141\u00f3d\u017a Transit", want: "lodz-transit"},
 		{title: "\u00deingvellir Tours", want: "thingvellir-tours"},
-		// Non-Latin scripts get transliterated via Unidecode tables \u2014
-		// CJK, Cyrillic, Greek round-trip to ASCII rather than surviving
-		// in the slug.
+		// Non-Latin scripts:
 		{title: "\u6771\u4eac API", want: "dong-jing"},
 		{title: "\u0440\u0443\u0441\u0441\u043a\u0438\u0439 API", want: "russkii"},
 		{title: "\u0394elta API", want: "delta"},
