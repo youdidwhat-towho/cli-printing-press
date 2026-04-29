@@ -698,32 +698,13 @@ func IsThinMCPDescription(desc string) bool {
 	return len(d) < MCPDescMinLen && len(strings.Fields(d)) < MCPDescMinWords
 }
 
-// scoreMCPDescriptionQuality measures how many of a CLI's typed MCP
-// tools carry agent-grade descriptions vs. terse spec-derived
-// summaries. Reads tools-manifest.json (the source of truth for typed
-// endpoint tools' descriptions at runtime) and counts entries whose
-// description trips IsThinMCPDescription — the same predicate
-// `printing-press tools-audit` uses for thin-mcp-description findings.
-//
-// Unscored when no manifest exists (legacy CLIs predating the
-// manifest schema) or when the manifest has no tools.
-//
-// Score curve favors low thin-percentage steeply; the goal is to
-// reward CLIs that have done the work to provide rich descriptions
-// rather than to give partial credit to ones that haven't. CLIs whose
-// descriptions are 50%+ thin score 0 — there's no signal to credit
-// when most of the surface is unusable to an agent.
-// ScoreMCPDescriptionQuality is the exported entry point for the
-// MCP-description-quality score. The audit binary calls it to capture
-// before/after snapshots for the polish ledger's scorecard-delta gate;
-// the scorecard pipeline calls it through the unexported alias below.
-func ScoreMCPDescriptionQuality(dir string) (score int, scored bool) {
-	return scoreMCPDescriptionQuality(dir)
-}
-
-func scoreMCPDescriptionQuality(dir string) (score int, scored bool) {
-	m, err := ReadToolsManifest(dir)
-	if err != nil || len(m.Tools) == 0 {
+// ScoreMCPDescriptionQualityForManifest scores an already-parsed
+// manifest. Callers that read tools-manifest.json for other reasons
+// in the same code path (e.g., printing-press tools-audit, which
+// emits findings from the manifest) call this variant to avoid
+// re-parsing.
+func ScoreMCPDescriptionQualityForManifest(m *ToolsManifest) (score int, scored bool) {
+	if m == nil || len(m.Tools) == 0 {
 		return 0, false
 	}
 	thin := 0
@@ -747,6 +728,29 @@ func scoreMCPDescriptionQuality(dir string) (score int, scored bool) {
 	default:
 		return 0, true
 	}
+}
+
+// scoreMCPDescriptionQuality measures how many of a CLI's typed MCP
+// tools carry agent-grade descriptions vs. terse spec-derived
+// summaries. Reads tools-manifest.json (the source of truth for typed
+// endpoint tools' descriptions at runtime) and counts entries whose
+// description trips IsThinMCPDescription — the same predicate
+// `printing-press tools-audit` uses for thin-mcp-description findings.
+//
+// Unscored when no manifest exists (legacy CLIs predating the
+// manifest schema) or when the manifest has no tools.
+//
+// Score curve favors low thin-percentage steeply; the goal is to
+// reward CLIs that have done the work to provide rich descriptions
+// rather than to give partial credit to ones that haven't. CLIs whose
+// descriptions are 50%+ thin score 0 — there's no signal to credit
+// when most of the surface is unusable to an agent.
+func scoreMCPDescriptionQuality(dir string) (score int, scored bool) {
+	m, err := ReadToolsManifest(dir)
+	if err != nil {
+		return 0, false
+	}
+	return ScoreMCPDescriptionQualityForManifest(m)
 }
 
 func scoreLocalCache(dir string) int {

@@ -307,6 +307,35 @@ Skills use a `references/` directory for content that is only needed during spec
 
 **What gets extracted:** Implementation details for conditional paths: capture tool CLI commands, delegation templates, scoring frameworks, report templates. These are loaded on-demand when the agent reaches the relevant phase gate.
 
+## Code & Comment Hygiene
+
+### Write-time defaults
+
+- **No speculative future-proofing in comments.** "Structured to absorb additional dimensions if future X needs them" — write the future struct when the future arrives. Today's reader can't act on a comment about hypothetical needs.
+- **No dates, incidents, or ticket numbers in code comments.** Belongs in the PR description and commit message, not the code. Comments stay forever; incidents fade.
+- **Code comments must be self-contained.** Don't make them load-bearing on in-repo skill prose, plans, or reference files that could be reorganized. RFCs, vendor API docs, and language specs are durable; in-repo prose is not. If you find yourself wanting to link, keep enough context inline that the code reads correctly when the link breaks.
+- **Don't restate the field or function name in its comment.** `MCPDescriptionQuality int` does not need `// the score for MCP description quality`. Document WHY (hidden constraints, subtle invariants), not WHAT (the name already says it).
+- **Categorical strings → typed const at introduction.** When adding an event kind, finding type, status name, or any string that names a category, declare the const in the same commit even with one call site. The compiler catches typos at every future site, and the const adds two lines today.
+- **Single-case switch with default fallthrough → `||`.** If every branch returns the same thing, `switch x { case A, B: return true } return false` is just `return x == A || x == B`. Switch shape implies cases will diverge; if they won't, write the `||`.
+- **Parse command inputs once at the entry point.** In a `RunE`, read files / manifests / configs at the entry and pass parsed results into helpers. Don't re-read "for clarity" — the cost compounds when helpers cross-call.
+- **UTF-8 safe string truncation.** `s[:n] + "…"` cuts mid-rune on multibyte input. Use rune slicing or an existing truncate helper from the same package.
+
+### Pre-commit: scan the diff
+
+- Near-identical loops or functions that should share a helper
+- A compound predicate (e.g., `f.Status != accepted || (requiresX(f.Kind) && missingX(f))`) inlined at 3+ sites that should be a named function
+- Parallel `hasX() bool` / `xCount() int` that drifted apart — derive one from the other
+- The same string literal repeated across sites where the categorical-const rule above would have applied — the const is cheap to add retroactively if missed at write-time
+
+## Editing AGENTS.md
+
+The "Code & Comment Hygiene" rules apply to this file too. Specifically:
+
+- **No dates, incidents, or ticket numbers in rules.** Justification belongs in the PR introducing the rule, not embedded in it.
+- **Don't defend the doc's structure inside the doc.** "We split this honestly because…" doesn't help future readers — write the rule, trust them.
+- **Make rules applicable at the moment they fire.** Write-time rules in a write-time section, diff-review rules in a review section. A rule the agent can't apply at the relevant moment is worse than no rule.
+- **Examples should be generic or anti-pattern-shaped, not lifted from the specific incident that prompted the rule.**
+
 ## Deterministic Inventory + Agent-Marked Ledger
 
 When a workflow has a checklist where detection is mechanical but each item needs per-item judgment, split the work between a binary-emitted inventory and an agent-maintained ledger. The binary owns "what's there"; the agent owns "what to do about each item." A persistent file holds both, so the work survives context flushes and the audit trail surfaces the agent's reasoning.

@@ -2,11 +2,11 @@ package cli
 
 import (
 	"bytes"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/mvanhorn/cli-printing-press/v2/internal/pipeline"
 )
 
 func TestRequiresPreDecisionFields(t *testing.T) {
@@ -277,51 +277,39 @@ func TestCheckScorecardDelta(t *testing.T) {
 		return ToolsAuditFinding{Kind: kind, Status: status, File: "tools-manifest.json"}
 	}
 
-	// Build a temp cli-dir with a tools-manifest.json driving a known
-	// MCPDescriptionQuality score. With one tool whose description is
-	// thin (50%), the score lands at 0/10 per the curve.
-	dir := t.TempDir()
-	manifest := `{"tools":[{"name":"a","description":"Create x"},{"name":"b","description":"this description is long enough to be over the threshold for the test"}]}`
-	if err := os.WriteFile(filepath.Join(dir, "tools-manifest.json"), []byte(manifest), 0644); err != nil {
-		t.Fatal(err)
-	}
+	// One thin + one rich = 50% thin = score 0 per the curve.
+	thinManifest := &pipeline.ToolsManifest{Tools: []pipeline.ManifestTool{
+		{Name: "a", Description: "Create x"},
+		{Name: "b", Description: "this description is long enough to be over the threshold for the test"},
+	}}
+	// All-rich manifest scores 10/10.
+	richManifest := &pipeline.ToolsManifest{Tools: []pipeline.ManifestTool{
+		{Name: "a", Description: "this is a sufficiently long and rich description for the test that exceeds threshold"},
+	}}
 
 	t.Run("nil previous returns nil", func(t *testing.T) {
-		got := checkScorecardDelta(dir, []ToolsAuditFinding{mkFinding("thin-mcp-description", statusAccepted)}, nil)
+		got := checkScorecardDelta(thinManifest, []ToolsAuditFinding{mkFinding("thin-mcp-description", statusAccepted)}, nil)
 		if got != nil {
 			t.Errorf("got %+v, want nil", got)
 		}
 	})
 
 	t.Run("previous without snapshot returns nil", func(t *testing.T) {
-		got := checkScorecardDelta(dir, []ToolsAuditFinding{mkFinding("thin-mcp-description", statusAccepted)}, mkLedger(0, false))
+		got := checkScorecardDelta(thinManifest, []ToolsAuditFinding{mkFinding("thin-mcp-description", statusAccepted)}, mkLedger(0, false))
 		if got != nil {
 			t.Errorf("got %+v, want nil", got)
 		}
 	})
 
 	t.Run("no thin-mcp accepts returns nil", func(t *testing.T) {
-		got := checkScorecardDelta(dir, []ToolsAuditFinding{mkFinding("thin-short", statusAccepted)}, mkLedger(3, true))
+		got := checkScorecardDelta(thinManifest, []ToolsAuditFinding{mkFinding("thin-short", statusAccepted)}, mkLedger(3, true))
 		if got != nil {
 			t.Errorf("got %+v, want nil", got)
 		}
 	})
 
 	t.Run("score lifted returns nil", func(t *testing.T) {
-		// Manifest scores 0; a "before" of -1 means "scored above current"
-		// would not fire (since current=0 > before=-1). Here we set
-		// before to a low value the current beats.
-		before := mkLedger(0, true)
-		// To exercise the lifted path, make current > before. Update
-		// manifest to all-rich descriptions so score becomes 10/10.
-		richManifest := `{"tools":[{"name":"a","description":"this is a sufficiently long and rich description for the test that exceeds threshold"}]}`
-		if err := os.WriteFile(filepath.Join(dir, "tools-manifest.json"), []byte(richManifest), 0644); err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() {
-			_ = os.WriteFile(filepath.Join(dir, "tools-manifest.json"), []byte(manifest), 0644)
-		})
-		got := checkScorecardDelta(dir, []ToolsAuditFinding{mkFinding("thin-mcp-description", statusAccepted)}, before)
+		got := checkScorecardDelta(richManifest, []ToolsAuditFinding{mkFinding("thin-mcp-description", statusAccepted)}, mkLedger(0, true))
 		if got != nil {
 			t.Errorf("got %+v, want nil (score lifted)", got)
 		}
@@ -329,7 +317,7 @@ func TestCheckScorecardDelta(t *testing.T) {
 
 	t.Run("no lift with thin accepts fires", func(t *testing.T) {
 		before := mkLedger(0, true)
-		got := checkScorecardDelta(dir, []ToolsAuditFinding{
+		got := checkScorecardDelta(thinManifest, []ToolsAuditFinding{
 			mkFinding("thin-mcp-description", statusAccepted),
 			mkFinding("thin-mcp-description", statusAccepted),
 		}, before)
@@ -344,11 +332,10 @@ func TestCheckScorecardDelta(t *testing.T) {
 		}
 	})
 
-	t.Run("no manifest returns nil", func(t *testing.T) {
-		empty := t.TempDir()
-		got := checkScorecardDelta(empty, []ToolsAuditFinding{mkFinding("thin-mcp-description", statusAccepted)}, mkLedger(0, true))
+	t.Run("nil manifest returns nil", func(t *testing.T) {
+		got := checkScorecardDelta(nil, []ToolsAuditFinding{mkFinding("thin-mcp-description", statusAccepted)}, mkLedger(0, true))
 		if got != nil {
-			t.Errorf("got %+v, want nil (no manifest, ScoreMCPDescriptionQuality unscored)", got)
+			t.Errorf("got %+v, want nil (nil manifest, scorer unscored)", got)
 		}
 	})
 }
@@ -394,12 +381,11 @@ func TestRenderCompletionGatesSilentWhenClean(t *testing.T) {
 }
 
 func TestEvaluateCompletionAggregatesGates(t *testing.T) {
-	dir := t.TempDir()
-	// Manifest with one thin description -> score = 0 (50% thin -> default tier)
-	manifest := `{"tools":[{"name":"a","description":"Create x"},{"name":"b","description":"this is a sufficiently long description for the test bench"}]}`
-	if err := os.WriteFile(filepath.Join(dir, "tools-manifest.json"), []byte(manifest), 0644); err != nil {
-		t.Fatal(err)
-	}
+	// Manifest with one thin description -> score = 0 (50% thin -> default tier).
+	manifest := &pipeline.ToolsManifest{Tools: []pipeline.ManifestTool{
+		{Name: "a", Description: "Create x"},
+		{Name: "b", Description: "this is a sufficiently long description for the test bench"},
+	}}
 	previous := &ToolsAuditLedger{
 		ScorecardBefore: &ScorecardSnapshot{MCPDescriptionQuality: 0, Captured: time.Now()},
 	}
@@ -423,7 +409,7 @@ func TestEvaluateCompletionAggregatesGates(t *testing.T) {
 		findings = append(findings, f)
 	}
 
-	c := evaluateCompletion(dir, findings, previous)
+	c := evaluateCompletion(manifest, findings, previous)
 
 	if len(c.IncompleteAccepts) != 1 {
 		t.Errorf("IncompleteAccepts = %d, want 1", len(c.IncompleteAccepts))
@@ -451,11 +437,25 @@ func TestEvaluateCompletionAggregatesGates(t *testing.T) {
 	}
 }
 
-func TestTruncateRationale(t *testing.T) {
-	if got := truncateRationale("short", 10); got != "short" {
-		t.Errorf("got %q, want short", got)
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name string
+		in   string
+		n    int
+		want string
+	}{
+		{"under limit", "short", 10, "short"},
+		{"at limit", "exactly10!", 10, "exactly10!"},
+		{"truncated ascii", "a long string", 5, "a lo…"},
+		{"n=1 returns first rune", "abcdef", 1, "a"},
+		{"n=0 returns empty", "abc", 0, ""},
+		{"multibyte safe at boundary", "héllo wörld", 8, "héllo w…"},
 	}
-	if got := truncateRationale("a long string", 5); got != "a lo…" {
-		t.Errorf("got %q, want \"a lo…\"", got)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := truncate(tc.in, tc.n); got != tc.want {
+				t.Errorf("truncate(%q, %d) = %q, want %q", tc.in, tc.n, got, tc.want)
+			}
+		})
 	}
 }

@@ -214,12 +214,16 @@ func renderMCPAuditTable(w interface{ Write(p []byte) (int, error) }, findings [
 	}
 }
 
+// truncate cuts s to at most n display characters, appending "…"
+// when shortened. Walks runes (not bytes) to keep multibyte
+// characters intact at the boundary.
 func truncate(s string, n int) string {
-	if len(s) <= n {
+	runes := []rune(s)
+	if len(runes) <= n {
 		return s
 	}
 	if n <= 1 {
-		return s[:n]
+		return string(runes[:n])
 	}
-	return s[:n-1] + "…"
+	return string(runes[:n-1]) + "…"
 }

@@ -24,13 +24,22 @@ const (
 	suspiciousMaxLen  = 30
 	suspiciousMinWord = 4
 
+	// Finding kinds. These strings appear in the JSON output, the
+	// ledger, and in agent-readable error messages, so changing a
+	// value is a backwards-incompatible ledger format change.
+	kindEmptyShort      = "empty-short"
+	kindThinShort       = "thin-short"
+	kindMissingReadOnly = "missing-read-only"
+	kindEmptyMCPDesc    = "empty-mcp-description"
+	kindThinMCPDesc     = "thin-mcp-description"
+
 	// duplicateRationaleThreshold caps how many accepted findings may
 	// share the same normalized note before the run is flagged as
-	// incomplete. The threshold is a hedge against bulk-accept patterns
-	// like "systemic to OpenAPI specs" applied to N findings without
-	// per-item deliberation. Five accepts with identical rationale is
-	// suspicious; ten is almost certainly a punt. See
-	// AGENTS.md "Deterministic Inventory + Agent-Marked Ledger".
+	// incomplete. Hedge against bulk-accept patterns ("systemic to
+	// OpenAPI specs" stamped on N findings without per-item
+	// deliberation). Five identical rationales is suspicious; ten is
+	// almost certainly a punt. See AGENTS.md "Deterministic Inventory
+	// + Agent-Marked Ledger".
 	duplicateRationaleThreshold = 5
 )
 
@@ -86,7 +95,13 @@ Exit 0 regardless of findings (diagnostic, not gating).`,
 		Args: cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			cliDir := args[0]
-			findings, err := runToolsAudit(cliDir)
+			// Parse tools-manifest.json once and share it across the
+			// audit, snapshot capture, and scorecard-delta gate. Each
+			// of those previously called pipeline.ReadToolsManifest
+			// independently — three reads on the first run.
+			manifest, _ := pipeline.ReadToolsManifest(cliDir)
+
+			findings, err := runToolsAudit(cliDir, manifest)
 			if err != nil {
 				return err
 			}
@@ -100,10 +115,10 @@ Exit 0 regardless of findings (diagnostic, not gating).`,
 			previous := readPreviousLedger(cliDir)
 			delta := reconcileWithLedger(previous, findings)
 
-			if err := writeLedger(cliDir, findings, previous); err != nil {
+			if err := writeLedger(cliDir, manifest, findings, previous); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: writing ledger %s: %v\n", filepath.Join(cliDir, ledgerFilename), err)
 			}
-			completion := evaluateCompletion(cliDir, findings, previous)
+			completion := evaluateCompletion(manifest, findings, previous)
 			renderToolsAuditTable(cmd.OutOrStdout(), findings, delta, completion)
 			return nil
 		},
@@ -139,28 +154,10 @@ type ToolsAuditFinding struct {
 	Status   string `json:"status,omitempty"` // "" (== pending) or "accepted"; agent writes
 	Note     string `json:"note,omitempty"`   // agent-written rationale for an accept decision
 
-	// Pre-decision fields. Required when Status is "accepted" on
-	// findings where bulk-accept was the historical failure mode
-	// (thin-mcp-description, empty-mcp-description). The agent fills
-	// these BEFORE flipping Status, to force per-item deliberation
-	// instead of pattern-matching across many findings with one
-	// rationale. See requiresPreDecisionFields below for which kinds
-	// trigger the gate.
-	//
-	// SpecSourceMaterial: what the OpenAPI spec actually provides for
-	// this endpoint — summary, parameters[].description, requestBody
-	// $refs, responses $refs. The honest answer is "the spec only
-	// gives us a 6-word summary," not a generic "specs are thin."
-	//
-	// TargetDescription: what a 10/10 description for this tool would
-	// say given the source material. Even when accepting the current
-	// state, naming the target makes the gap visible.
-	//
-	// GapAnalysis: why the generator can't produce TargetDescription
-	// from SpecSourceMaterial today. This is the load-bearing field —
-	// it forces the agent to reason about whether the gap is genuinely
-	// systemic (generator improvement needed) or per-finding (override
-	// would close it).
+	// Pre-decision fields. The agent fills these BEFORE flipping
+	// Status to "accepted" on kinds where requiresPreDecisionFields
+	// is true; the gate forces per-item deliberation instead of
+	// pattern-matching with one rationale across many findings.
 	SpecSourceMaterial string `json:"spec_source_material,omitempty"`
 	TargetDescription  string `json:"target_description,omitempty"`
 	GapAnalysis        string `json:"gap_analysis,omitempty"`
@@ -190,12 +187,12 @@ var readShapedNames = map[string]struct{}{
 // <cliDir>/internal/cli/*.go (shell-out tools) and the runtime tools
 // manifest at <cliDir>/tools-manifest.json (typed endpoint tools).
 // Findings are sorted by file then line for stable output.
-func runToolsAudit(cliDir string) ([]ToolsAuditFinding, error) {
+func runToolsAudit(cliDir string, manifest *pipeline.ToolsManifest) ([]ToolsAuditFinding, error) {
 	cobraFindings, err := auditCobraSource(cliDir)
 	if err != nil {
 		return nil, err
 	}
-	manifestFindings := auditMCPManifest(cliDir)
+	manifestFindings := auditMCPManifest(manifest)
 	findings := append(cobraFindings, manifestFindings...)
 	sort.Slice(findings, func(i, j int) bool {
 		if findings[i].File != findings[j].File {
@@ -246,15 +243,13 @@ func auditCobraSource(cliDir string) ([]ToolsAuditFinding, error) {
 	return findings, nil
 }
 
-// auditMCPManifest reads tools-manifest.json and flags MCP tool
-// descriptions that fall below the agent-grade bar. The manifest is
-// the source of truth for typed endpoint tools' descriptions; for
-// shell-out tools, descriptions come from the Cobra Short and the
-// auditCommandFields path covers them. Returns nil silently if the
-// manifest is missing (older CLIs predate it) or malformed.
-func auditMCPManifest(cliDir string) []ToolsAuditFinding {
-	m, err := pipeline.ReadToolsManifest(cliDir)
-	if err != nil {
+// auditMCPManifest flags MCP tool descriptions that fall below the
+// agent-grade bar. The manifest is the source of truth for typed
+// endpoint tools' descriptions; for shell-out tools, descriptions
+// come from the Cobra Short and the auditCommandFields path covers
+// them. Nil manifest (missing or malformed file) emits no findings.
+func auditMCPManifest(m *pipeline.ToolsManifest) []ToolsAuditFinding {
+	if m == nil {
 		return nil
 	}
 	var findings []ToolsAuditFinding
@@ -265,12 +260,12 @@ func auditMCPManifest(cliDir string) []ToolsAuditFinding {
 		switch {
 		case t.Description == "":
 			findings = append(findings, ToolsAuditFinding{
-				Kind: "empty-mcp-description", Command: t.Name,
+				Kind: kindEmptyMCPDesc, Command: t.Name,
 				File: pipeline.ToolsManifestFilename, Evidence: "(empty)",
 			})
 		case pipeline.IsThinMCPDescription(t.Description):
 			findings = append(findings, ToolsAuditFinding{
-				Kind: "thin-mcp-description", Command: t.Name,
+				Kind: kindThinMCPDesc, Command: t.Name,
 				File: pipeline.ToolsManifestFilename, Evidence: t.Description,
 			})
 		}
@@ -386,12 +381,12 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 		switch {
 		case f.short == "":
 			out = append(out, ToolsAuditFinding{
-				Kind: "empty-short", Command: name, File: file, Line: line,
+				Kind: kindEmptyShort, Command: name, File: file, Line: line,
 				Evidence: "(empty)",
 			})
 		case suspiciousShort(f.short):
 			out = append(out, ToolsAuditFinding{
-				Kind: "thin-short", Command: name, File: file, Line: line,
+				Kind: kindThinShort, Command: name, File: file, Line: line,
 				Evidence: f.short,
 			})
 		}
@@ -401,7 +396,7 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 	// method; framework commands don't register at all).
 	if isShellOut && !f.hasReadOnly && readShapedName(name) {
 		out = append(out, ToolsAuditFinding{
-			Kind: "missing-read-only", Command: name, File: file, Line: line,
+			Kind: kindMissingReadOnly, Command: name, File: file, Line: line,
 			Evidence: "name matches read heuristic; no mcp:read-only annotation",
 		})
 	}
@@ -441,11 +436,10 @@ func readShapedName(name string) bool {
 	return ok
 }
 
-// completionStatus captures the four gates that distinguish a complete
-// polish run from a run that "looks done" but skipped per-item
-// deliberation. Today's count-based "zero pending" is the baseline; the
-// gates are the load-bearing checks. See AGENTS.md "Deterministic
-// Inventory + Agent-Marked Ledger" for the rationale.
+// completionStatus carries the three load-bearing gates plus a
+// resume hint. The gates distinguish a complete polish run from one
+// that "looks done" via count-based pending alone. See AGENTS.md
+// "Deterministic Inventory + Agent-Marked Ledger" for the rationale.
 type completionStatus struct {
 	IncompleteAccepts        []ToolsAuditFinding  // accepted but pre-decision fields missing
 	DuplicateRationaleGroups []rationaleGroup     // accepts that share a normalized note
@@ -472,12 +466,12 @@ type scorecardDeltaIssue struct {
 	AcceptedThinMCP int
 }
 
-// evaluateCompletion runs all four gates against the current findings
-// and returns the union of issues. An empty struct means the run is
-// complete by the load-bearing definition (zero pending + every gate
-// passes); any populated field means the run is incomplete with a
-// specific reason the render will surface.
-func evaluateCompletion(cliDir string, findings []ToolsAuditFinding, previous *ToolsAuditLedger) completionStatus {
+// evaluateCompletion runs the three gates plus the resume hint
+// against the current findings. The completionStatus carries gate
+// failures (IncompleteAccepts, DuplicateRationaleGroups,
+// ScorecardDeltaIssue) and a NextPending hint; gate-failure fields
+// being empty + no pending entries means the run is complete.
+func evaluateCompletion(manifest *pipeline.ToolsManifest, findings []ToolsAuditFinding, previous *ToolsAuditLedger) completionStatus {
 	var c completionStatus
 	for _, f := range findings {
 		if f.Status != statusAccepted {
@@ -488,25 +482,19 @@ func evaluateCompletion(cliDir string, findings []ToolsAuditFinding, previous *T
 		}
 	}
 	c.DuplicateRationaleGroups = detectDuplicateRationales(findings, duplicateRationaleThreshold)
-	c.ScorecardDeltaIssue = checkScorecardDelta(cliDir, findings, previous)
+	c.ScorecardDeltaIssue = checkScorecardDelta(manifest, findings, previous)
 	c.NextPending = nextPendingFinding(findings, previous)
 	return c
 }
 
 // requiresPreDecisionFields gates which finding kinds force the
-// SpecSourceMaterial/TargetDescription/GapAnalysis trio when accepted.
-// Today: only thin-mcp-description and empty-mcp-description, where
-// the cal-com test surfaced bulk-accept ("systemic to OpenAPI specs"
-// applied to 246 findings) as the failure mode. The Cobra-side kinds
-// (empty-short, thin-short, missing-read-only) have legitimate
-// uniform accept patterns (DO-NOT-EDIT generated files) that would be
-// noise to gate.
+// SpecSourceMaterial/TargetDescription/GapAnalysis trio when
+// accepted. The Cobra-side kinds have legitimate uniform accept
+// patterns (DO-NOT-EDIT generated files) that would be noise to
+// gate; the MCP-description kinds are the ones bulk-accept with a
+// generic rationale historically masked.
 func requiresPreDecisionFields(kind string) bool {
-	switch kind {
-	case "thin-mcp-description", "empty-mcp-description":
-		return true
-	}
-	return false
+	return kind == kindThinMCPDesc || kind == kindEmptyMCPDesc
 }
 
 func missingPreDecisionFields(f ToolsAuditFinding) bool {
@@ -561,20 +549,20 @@ func normalizeRationale(s string) string {
 // Returns nil when ScorecardBefore is absent (older ledger, or CLI
 // with no manifest) or when there are no accepted thin-mcp findings.
 // Both conditions mean the gate has nothing to enforce.
-func checkScorecardDelta(cliDir string, findings []ToolsAuditFinding, previous *ToolsAuditLedger) *scorecardDeltaIssue {
+func checkScorecardDelta(manifest *pipeline.ToolsManifest, findings []ToolsAuditFinding, previous *ToolsAuditLedger) *scorecardDeltaIssue {
 	if previous == nil || previous.ScorecardBefore == nil {
 		return nil
 	}
 	var acceptedThinMCP int
 	for _, f := range findings {
-		if f.Status == statusAccepted && f.Kind == "thin-mcp-description" {
+		if f.Status == statusAccepted && f.Kind == kindThinMCPDesc {
 			acceptedThinMCP++
 		}
 	}
 	if acceptedThinMCP == 0 {
 		return nil
 	}
-	current, scored := pipeline.ScoreMCPDescriptionQuality(cliDir)
+	current, scored := pipeline.ScoreMCPDescriptionQualityForManifest(manifest)
 	if !scored {
 		return nil
 	}
@@ -588,16 +576,23 @@ func checkScorecardDelta(cliDir string, findings []ToolsAuditFinding, previous *
 	}
 }
 
+// isPending reports whether a finding still needs the agent's
+// attention. Either status is unset, or status is "accepted" on a
+// kind that requires pre-decision fields and the fields aren't
+// populated — an accepted-but-incomplete entry, which the gates
+// surface and which counts as pending for the summary line.
+func isPending(f ToolsAuditFinding) bool {
+	if f.Status != statusAccepted {
+		return true
+	}
+	return requiresPreDecisionFields(f.Kind) && missingPreDecisionFields(f)
+}
+
 // nextPendingFinding returns the resume hint: the first finding that
-// the agent still has to act on. "Pending" here means status is
-// unset, OR status is accepted but pre-decision fields are missing
-// (the entry was marked accepted prematurely). Returns nil when
-// nothing is pending — the run is at least count-complete.
-//
-// The previous ledger's Progress.LastProcessedFindingID is read as a
-// soft hint: when present, the search starts after that finding to
-// resume mid-walk. When absent or the referenced finding is gone, the
-// search starts from the head of the list.
+// isPending. The previous ledger's Progress.LastProcessedFindingID is
+// read as a soft hint — when present, the search starts after that
+// finding so a re-invocation resumes mid-walk; if exhausted or
+// missing, falls back to a head-to-tail scan.
 func nextPendingFinding(findings []ToolsAuditFinding, previous *ToolsAuditLedger) *ToolsAuditFinding {
 	startIdx := 0
 	if previous != nil && previous.Progress != nil && previous.Progress.LastProcessedFindingID != "" {
@@ -608,25 +603,25 @@ func nextPendingFinding(findings []ToolsAuditFinding, previous *ToolsAuditLedger
 			}
 		}
 	}
-	for i := startIdx; i < len(findings); i++ {
-		f := findings[i]
-		if f.Status != statusAccepted {
-			return &f
-		}
-		if requiresPreDecisionFields(f.Kind) && missingPreDecisionFields(f) {
-			return &f
-		}
+	if f := firstPending(findings, startIdx, len(findings)); f != nil {
+		return f
 	}
-	// If the resume hint pointed past every remaining pending finding,
-	// fall back to a head-to-tail scan so we don't claim "complete"
-	// when there are pendings before the checkpoint.
-	for i := 0; i < startIdx && i < len(findings); i++ {
-		f := findings[i]
-		if f.Status != statusAccepted {
-			return &f
-		}
-		if requiresPreDecisionFields(f.Kind) && missingPreDecisionFields(f) {
-			return &f
+	return firstPending(findings, 0, startIdx)
+}
+
+// firstPending returns the first isPending finding in findings[lo:hi]
+// or nil. Extracted so nextPendingFinding's forward + fallback scans
+// share the same predicate.
+func firstPending(findings []ToolsAuditFinding, lo, hi int) *ToolsAuditFinding {
+	if lo < 0 {
+		lo = 0
+	}
+	if hi > len(findings) {
+		hi = len(findings)
+	}
+	for i := lo; i < hi; i++ {
+		if isPending(findings[i]) {
+			return &findings[i]
 		}
 	}
 	return nil
@@ -635,10 +630,10 @@ func nextPendingFinding(findings []ToolsAuditFinding, previous *ToolsAuditLedger
 func renderToolsAuditTable(w io.Writer, findings []ToolsAuditFinding, delta ledgerDelta, completion completionStatus) {
 	var pending, accepted int
 	for _, f := range findings {
-		if f.Status == statusAccepted {
-			accepted++
-		} else {
+		if isPending(f) {
 			pending++
+		} else {
+			accepted++
 		}
 	}
 	gateFired := completion.hasGateFailure()
@@ -673,7 +668,7 @@ func renderToolsAuditTable(w io.Writer, findings []ToolsAuditFinding, delta ledg
 		fmt.Fprintln(w)
 		fmt.Fprintf(w, "%-20s  %-15s  %-30s  %s\n", "KIND", "COMMAND", "FILE:LINE", "EVIDENCE")
 		for _, f := range findings {
-			if f.Status == statusAccepted {
+			if !isPending(f) {
 				continue
 			}
 			loc := fmt.Sprintf("%s:%d", f.File, f.Line)
@@ -689,14 +684,9 @@ func renderToolsAuditTable(w io.Writer, findings []ToolsAuditFinding, delta ledg
 	}
 }
 
-// hasGateFailure is true when any of the four gates surfaced an issue
-// the agent has to act on. Used to color the summary line.
-func (c completionStatus) hasGateFailure() bool {
-	return len(c.IncompleteAccepts) > 0 ||
-		len(c.DuplicateRationaleGroups) > 0 ||
-		c.ScorecardDeltaIssue != nil
-}
-
+// gateFailureCount returns the number of gates surfacing an issue the
+// agent has to act on. NextPending is a resume hint, not a gate, and
+// is excluded.
 func (c completionStatus) gateFailureCount() int {
 	n := 0
 	if len(c.IncompleteAccepts) > 0 {
@@ -709,6 +699,10 @@ func (c completionStatus) gateFailureCount() int {
 		n++
 	}
 	return n
+}
+
+func (c completionStatus) hasGateFailure() bool {
+	return c.gateFailureCount() > 0
 }
 
 // renderCompletionGates surfaces each fired gate with the specific
@@ -727,7 +721,7 @@ func renderCompletionGates(w io.Writer, c completionStatus) {
 		}
 	}
 	for _, g := range c.DuplicateRationaleGroups {
-		fmt.Fprintf(w, "  - %d accepted finding(s) share rationale %q — differentiate per item or rewrite:\n", len(g.Findings), truncateRationale(g.Rationale, 60))
+		fmt.Fprintf(w, "  - %d accepted finding(s) share rationale %q — differentiate per item or rewrite:\n", len(g.Findings), truncate(g.Rationale, 60))
 		for _, f := range g.Findings {
 			fmt.Fprintf(w, "      %s on %s (%s:%d)\n", f.Kind, f.Command, f.File, f.Line)
 		}
@@ -735,13 +729,6 @@ func renderCompletionGates(w io.Writer, c completionStatus) {
 	if d := c.ScorecardDeltaIssue; d != nil {
 		fmt.Fprintf(w, "  - MCPDescriptionQuality unchanged (%d/10 → %d/10) but %d thin-mcp-description finding(s) accepted; either write overrides or accepts are unwarranted\n", d.Before, d.After, d.AcceptedThinMCP)
 	}
-}
-
-func truncateRationale(s string, max int) string {
-	if len(s) <= max {
-		return s
-	}
-	return s[:max-1] + "…"
 }
 
 // ToolsAuditLedger is the on-disk snapshot of the last audit run.
@@ -764,10 +751,8 @@ type ToolsAuditLedger struct {
 	Progress        *PolishProgress     `json:"progress,omitempty"`
 }
 
-// ScorecardSnapshot captures the dimensions the polish ledger gates on.
-// Today only MCPDescriptionQuality is read; the snapshot is structured
-// to absorb additional dimensions if future polish gates need them
-// without breaking ledger compatibility.
+// ScorecardSnapshot captures the scorecard dimensions the polish
+// ledger gates on, taken at run start.
 type ScorecardSnapshot struct {
 	MCPDescriptionQuality int       `json:"mcp_description_quality"`
 	Captured              time.Time `json:"captured"`
@@ -810,20 +795,19 @@ func readPreviousLedger(cliDir string) *ToolsAuditLedger {
 	return &l
 }
 
-func writeLedger(cliDir string, findings []ToolsAuditFinding, previous *ToolsAuditLedger) error {
+func writeLedger(cliDir string, manifest *pipeline.ToolsManifest, findings []ToolsAuditFinding, previous *ToolsAuditLedger) error {
 	ledger := ToolsAuditLedger{
 		Timestamp: time.Now().UTC(),
 		CLIDir:    cliDir,
 		Findings:  findings,
 	}
 	// ScorecardBefore is sticky: captured on the first run that has no
-	// existing ledger, preserved on every subsequent run. The snapshot
-	// is the anchor for the scorecard-delta gate, so re-running the
-	// audit must not silently rebase the baseline mid-polish.
+	// existing ledger, preserved on every subsequent run. Anchoring the
+	// scorecard-delta gate, so re-running must not rebase the baseline.
 	if previous != nil && previous.ScorecardBefore != nil {
 		ledger.ScorecardBefore = previous.ScorecardBefore
 	} else {
-		ledger.ScorecardBefore = captureScorecardSnapshot(cliDir)
+		ledger.ScorecardBefore = captureScorecardSnapshot(manifest)
 	}
 	if previous != nil && previous.Progress != nil {
 		ledger.Progress = previous.Progress
@@ -837,11 +821,10 @@ func writeLedger(cliDir string, findings []ToolsAuditFinding, previous *ToolsAud
 }
 
 // captureScorecardSnapshot reads the dimensions the ledger gates on.
-// Returns nil when no dimension can be scored (e.g., no
-// tools-manifest.json) so the gate has nothing to enforce; that's the
-// honest answer for CLIs that predate the manifest, not a silent zero.
-func captureScorecardSnapshot(cliDir string) *ScorecardSnapshot {
-	score, scored := pipeline.ScoreMCPDescriptionQuality(cliDir)
+// Returns nil when no dimension can be scored (e.g., no manifest) so
+// the gate has nothing to enforce.
+func captureScorecardSnapshot(manifest *pipeline.ToolsManifest) *ScorecardSnapshot {
+	score, scored := pipeline.ScoreMCPDescriptionQualityForManifest(manifest)
 	if !scored {
 		return nil
 	}
