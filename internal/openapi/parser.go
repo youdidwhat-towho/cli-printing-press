@@ -2562,6 +2562,7 @@ func stripOperationIDResourceSegments(name string, variants []string) string {
 }
 
 func toSnakeCase(input string) string {
+	input = naming.ASCIIFold(input)
 	var b strings.Builder
 	var prev rune
 	lastUnderscore := true
@@ -2595,6 +2596,7 @@ func sanitizeResourceName(name string) string {
 }
 
 func sanitizeTypeName(name string) string {
+	name = naming.ASCIIFold(name)
 	name = strings.TrimLeft(name, "$")
 	name = strings.NewReplacer(".", "_", "/", "_", "\\", "_", "-", "_", " ", "_").Replace(name)
 	var b strings.Builder
@@ -2633,6 +2635,7 @@ func isGoKeyword(s string) bool {
 }
 
 func toCamelCase(s string) string {
+	s = naming.ASCIIFold(s)
 	s = strings.TrimLeft(s, "$")
 	parts := strings.FieldsFunc(s, func(r rune) bool {
 		return r == '_' || r == '-' || r == ' ' || r == '.' || r == '/' || r == '\\' || r == '$' || r == '#' || r == '@'
@@ -2650,6 +2653,7 @@ func toCamelCase(s string) string {
 }
 
 func toKebabCase(input string) string {
+	input = naming.ASCIIFold(input)
 	var b strings.Builder
 	lastHyphen := true
 
@@ -2670,6 +2674,14 @@ func toKebabCase(input string) string {
 }
 
 func cleanSpecName(title string) string {
+	// Transliterate Unicode to ASCII before any tokenizing or
+	// kebab-casing. Without this, the slug retains accents, fused-
+	// diacritic Latin (ø, ß, æ, ł), and non-Latin scripts (CJK,
+	// Cyrillic, Greek), which then drift through to directory names,
+	// binary names, Go import paths, and Cobra command paths —
+	// producing spurious cmd dirs on regen and breaking import paths
+	// on case-folding filesystems. See naming.ASCIIFold.
+	title = naming.ASCIIFold(title)
 	title = strings.ToLower(strings.TrimSpace(title))
 	if title == "" {
 		return "api"

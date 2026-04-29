@@ -9,6 +9,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/mvanhorn/cli-printing-press/v2/internal/naming"
 	"github.com/mvanhorn/cli-printing-press/v2/internal/spec"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
@@ -729,6 +730,7 @@ func splitWords(s string) []string {
 }
 
 func toKebabCase(s string) string {
+	s = naming.ASCIIFold(s)
 	words := splitWords(s)
 	for i := range words {
 		words[i] = strings.ToLower(words[i])

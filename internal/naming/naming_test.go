@@ -61,11 +61,67 @@ func TestEnvPrefix(t *testing.T) {
 		"food & dining": "FOOD_DINING",
 		"1password":     "API_1PASSWORD",
 		"!!!":           "API",
+		// Fused-diacritic Latin and non-Latin scripts get transliterated
+		// via Unidecode rather than dropped on the floor.
+		"Großhandel": "GROSSHANDEL",
+		"Łódź":       "LODZ",
+		"Ørsted":     "ORSTED",
+		"東京":         "DONG_JING",
+		"русский":    "RUSSKII",
 	}
 
 	for input, want := range tests {
 		if got := EnvPrefix(input); got != want {
 			t.Fatalf("EnvPrefix(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestASCIIFold(t *testing.T) {
+	tests := map[string]string{
+		"":              "",
+		"already-ascii": "already-ascii",
+		// Precomposed accents (NFD-decomposable):
+		"Pokémon": "Pokemon",
+		"naïve":   "naive",
+		"café":    "cafe",
+		// Fused-diacritic Latin (non-decomposable):
+		"Großhandel":   "Grosshandel",
+		"Łódź":         "Lodz",
+		"Encyclopædia": "Encyclopaedia",
+		"Ørsted":       "Orsted",
+		"Þingvellir":   "Thingvellir",
+		// Non-Latin scripts get reasonable ASCII transliterations from
+		// the Unidecode tables — these are approximations, not perfect
+		// romanizations, and the specific output is what the canonical
+		// Text::Unidecode table produces.
+		"東京":      "Dong Jing ",
+		"русский": "russkii",
+		"Δelta":   "Delta",
+	}
+
+	for input, want := range tests {
+		if got := ASCIIFold(input); got != want {
+			t.Fatalf("ASCIIFold(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestSnakeIdentifier(t *testing.T) {
+	tests := map[string]string{
+		"funding --who": "funding_who",
+		"FUNDING-TREND": "funding_trend",
+		"already_snake": "already_snake",
+		// Non-ASCII content folds before snake-casing instead of getting
+		// dropped (which would produce "" or partial identifiers).
+		"Pokémon list":      "pokemon_list",
+		"Großhandel--query": "grosshandel_query",
+		"русский_kpi":       "russkii_kpi",
+	}
+
+	for input, want := range tests {
+		if got := SnakeIdentifier(input); got != want {
+			t.Fatalf("SnakeIdentifier(%q) = %q, want %q", input, got, want)
 		}
 	}
 }

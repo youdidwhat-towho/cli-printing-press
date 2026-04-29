@@ -5,10 +5,35 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/mozillazg/go-unidecode"
 	"golang.org/x/text/cases"
 	"golang.org/x/text/language"
-	"golang.org/x/text/unicode/norm"
 )
+
+// ASCIIFold transliterates Unicode (accented Latin, fused-diacritic Latin
+// like ø/ß/æ, Greek, Cyrillic, CJK, …) to ASCII using the Unidecode
+// transliteration tables — the same tables Django's slugify, Rails, and
+// most modern slug libraries use:
+//
+//	"Pokémon"      → "Pokemon"
+//	"Großhandel"   → "Grosshandel"
+//	"Łódź"         → "Lodz"
+//	"Ørsted"       → "Orsted"
+//	"Encyclopædia" → "Encyclopaedia"
+//	"東京"          → "Dong Jing"
+//	"русский"      → "russkii"
+//	"Δelta"        → "Delta"
+//
+// Apply at every chokepoint that turns user-supplied spec strings
+// (titles, resource names, operationIds, schema names, path segments)
+// into file/folder names or Go identifiers. Without this, non-ASCII
+// content survives into directory paths, Go import paths, Cobra command
+// names, and MCP tool names, breaking portability across filesystems
+// and tooling. Output preserves spacing/casing — downstream
+// to{Snake,Kebab,Camel}Case still owns identifier shape.
+func ASCIIFold(s string) string {
+	return unidecode.Unidecode(s)
+}
 
 const (
 	CurrentCLISuffix = "-pp-cli"
@@ -46,8 +71,11 @@ func HumanName(slug string) string {
 // SnakeIdentifier collapses a free-form command spec into a snake_case Go
 // identifier safe to use as an MCP tool name. "funding --who" → "funding_who",
 // "FUNDING-TREND" → "funding_trend". Used by the generator's mcpToolName
-// template helper.
+// template helper. Non-ASCII input is folded via Unidecode first so
+// accented or non-Latin tool names round-trip to ASCII identifiers
+// instead of getting silently dropped.
 func SnakeIdentifier(s string) string {
+	s = ASCIIFold(s)
 	var b strings.Builder
 	lastUnder := false
 	for _, r := range s {
@@ -69,12 +97,15 @@ func SnakeIdentifier(s string) string {
 }
 
 // EnvPrefix returns an ASCII-only shell-safe environment variable prefix.
-// API display names and OpenAPI titles can contain accents or punctuation
-// ("PokéAPI", "Cal.com", "1Password"); generated env vars must not.
+// API display names and OpenAPI titles can contain accents, fused-
+// diacritic Latin (ß, ø), or non-Latin scripts ("PokéAPI", "Cal.com",
+// "1Password", "東京"); generated env vars must not. Unidecode handles
+// the transliteration so we keep meaningful prefixes for non-Latin APIs
+// instead of dropping them on the floor.
 func EnvPrefix(name string) string {
 	var b strings.Builder
 	lastUnderscore := false
-	for _, r := range norm.NFD.String(name) {
+	for _, r := range ASCIIFold(name) {
 		switch {
 		case r >= 'a' && r <= 'z':
 			b.WriteRune(r - ('a' - 'A'))
@@ -85,8 +116,6 @@ func EnvPrefix(name string) string {
 		case r >= '0' && r <= '9':
 			b.WriteRune(r)
 			lastUnderscore = false
-		case unicode.Is(unicode.Mn, r):
-			continue
 		default:
 			if !lastUnderscore && b.Len() > 0 {
 				b.WriteByte('_')
@@ -106,8 +135,9 @@ func EnvPrefix(name string) string {
 
 // Snake converts CamelCase to snake_case for generated tool name segments.
 // Hyphens are intentionally preserved to match the historical MCP template
-// helper behavior.
+// helper behavior. Non-ASCII input is folded first.
 func Snake(s string) string {
+	s = ASCIIFold(s)
 	var result strings.Builder
 	for i, r := range s {
 		if unicode.IsUpper(r) && i > 0 {
