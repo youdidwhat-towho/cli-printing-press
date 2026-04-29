@@ -22,7 +22,38 @@ const (
 	statusAccepted    = "accepted"
 	suspiciousMaxLen  = 30
 	suspiciousMinWord = 4
+
+	// MCP tool descriptions need richer text than Cobra Shorts. Agents
+	// pick from a tool catalog without the context a human gets from
+	// --help, so spec-derived summaries like "Create a tag" or "List
+	// items" — fine for OpenAPI doc rendering — leave the agent guessing
+	// what fields to pass and what comes back. The thresholds here are
+	// floor values: 60 chars / 8 words is roughly two short clauses,
+	// enough to convey the action plus one parameter or return shape.
+	mcpDescMinLen   = 60
+	mcpDescMinWords = 8
+
+	manifestFile = "tools-manifest.json"
 )
+
+// frameworkCommands mirrors cobratree/classify.go.tmpl. The runtime
+// walker skips these names entirely — they're never registered as MCP
+// tools — so audit findings on their Cobra Short are noise.
+var frameworkCommands = map[string]bool{
+	"about":         true,
+	"agent-context": true,
+	"api":           true,
+	"auth":          true,
+	"completion":    true,
+	"doctor":        true,
+	"feedback":      true,
+	"help":          true,
+	"profile":       true,
+	"search":        true,
+	"sql":           true,
+	"version":       true,
+	"which":         true,
+}
 
 // newToolsAuditCmd inspects a single printed CLI's command tree for
 // MCP tool quality issues a deterministic check can catch: empty Short,
@@ -79,19 +110,29 @@ Exit 0 regardless of findings (diagnostic, not gating).`,
 	return cmd
 }
 
-// ToolsAuditFinding is one mechanical issue discovered in a command
-// definition. Status and Note are ledger-only; the audit phase emits
-// findings without them (omitempty keeps --json clean for downstream
-// parsing). The agent edits the persisted ledger to flip Status to
-// "accepted" with a Note explaining why a thin-short is fine as-is.
-// On re-run the binary preserves these fields for any finding whose
-// identity key matches.
+// ToolsAuditFinding is one mechanical issue discovered in either a
+// Cobra command literal or an entry in the runtime tools manifest.
+// Status and Note are ledger-only; the audit phase emits findings
+// without them (omitempty keeps --json clean for downstream parsing).
+// The agent edits the persisted ledger to flip Status to "accepted"
+// with a Note explaining why a finding is fine as-is. On re-run the
+// binary preserves these fields for any finding whose identity key
+// matches.
+//
+// Five finding kinds, two surfaces:
+//   - Cobra surface (internal/cli/*.go): "empty-short", "thin-short",
+//     "missing-read-only" — these check shell-out tools the runtime
+//     walker registers from Cobra metadata.
+//   - Manifest surface (tools-manifest.json): "empty-mcp-description",
+//     "thin-mcp-description" — these check the descriptions agents
+//     actually see for typed endpoint tools, where the source is the
+//     OpenAPI spec rather than the Cobra Short.
 type ToolsAuditFinding struct {
-	Kind     string `json:"kind"`             // "empty-short", "thin-short", "missing-read-only"
-	Command  string `json:"command"`          // value of the Use field, e.g. "tiktok"
-	File     string `json:"file"`             // path relative to cli-dir
-	Line     int    `json:"line"`             // 1-based source line of the cobra.Command literal
-	Evidence string `json:"evidence"`         // the offending text (Short value, etc.)
+	Kind     string `json:"kind"`
+	Command  string `json:"command"`          // tool name (manifest) or Cobra Use head (source)
+	File     string `json:"file"`             // file path relative to cli-dir
+	Line     int    `json:"line"`             // 1-based source line; 0 for manifest findings
+	Evidence string `json:"evidence"`         // the offending text
 	Status   string `json:"status,omitempty"` // "" (== pending) or "accepted"; agent writes
 	Note     string `json:"note,omitempty"`   // agent-written rationale for an accept decision
 }
@@ -101,18 +142,45 @@ type ToolsAuditFinding struct {
 // frameworkCommands skip set (search, sql, doctor, version) — the
 // runtime walker doesn't register those as MCP tools, so a missing
 // read-only annotation is meaningless noise for them.
+//
+// tail/since/report/lint were added after dub's polish-Pass-2 surfaced
+// them as commands the heuristic missed. They're consistently read-
+// shaped across domains (log tail, time-windowed listing, generated
+// report, static check). Do not add domain-specific verbs (funnel,
+// leaderboard, journey, drift) — those mean reads in some verticals
+// and writes in others; let Pass 2 catch them per CLI.
 var readShapedNames = map[string]struct{}{
 	"list": {}, "get": {}, "show": {}, "view": {},
 	"find": {}, "describe": {}, "context": {}, "stats": {},
 	"trending": {}, "trust": {}, "health": {}, "stale": {}, "orphans": {},
-	"reconcile": {}, "analytics": {},
+	"reconcile": {}, "analytics": {}, "tail": {}, "since": {},
+	"report": {}, "lint": {},
 }
 
-// runToolsAudit reads every non-test .go file in <cliDir>/internal/cli/
-// and accumulates findings across each Command literal. Returns
-// findings sorted by file then line so the human-readable table is
-// stable and the JSON output is diff-friendly.
+// runToolsAudit walks two surfaces: the Cobra source under
+// <cliDir>/internal/cli/*.go (shell-out tools) and the runtime tools
+// manifest at <cliDir>/tools-manifest.json (typed endpoint tools).
+// Findings are sorted by file then line for stable output.
 func runToolsAudit(cliDir string) ([]ToolsAuditFinding, error) {
+	cobraFindings, err := auditCobraSource(cliDir)
+	if err != nil {
+		return nil, err
+	}
+	manifestFindings := auditMCPManifest(cliDir)
+	findings := append(cobraFindings, manifestFindings...)
+	sort.Slice(findings, func(i, j int) bool {
+		if findings[i].File != findings[j].File {
+			return findings[i].File < findings[j].File
+		}
+		if findings[i].Line != findings[j].Line {
+			return findings[i].Line < findings[j].Line
+		}
+		return findings[i].Command < findings[j].Command
+	})
+	return findings, nil
+}
+
+func auditCobraSource(cliDir string) ([]ToolsAuditFinding, error) {
 	pkgDir := filepath.Join(cliDir, "internal", "cli")
 	entries, err := os.ReadDir(pkgDir)
 	if err != nil {
@@ -146,13 +214,67 @@ func runToolsAudit(cliDir string) ([]ToolsAuditFinding, error) {
 			return true
 		})
 	}
-	sort.Slice(findings, func(i, j int) bool {
-		if findings[i].File != findings[j].File {
-			return findings[i].File < findings[j].File
-		}
-		return findings[i].Line < findings[j].Line
-	})
 	return findings, nil
+}
+
+// toolsManifest is the subset of <cli-dir>/tools-manifest.json the
+// audit reads. The full manifest carries more fields (params, method,
+// path, transport metadata) but only Name and Description matter here.
+type toolsManifest struct {
+	Tools []toolsManifestEntry `json:"tools"`
+}
+
+type toolsManifestEntry struct {
+	Name        string `json:"name"`
+	Description string `json:"description"`
+}
+
+// auditMCPManifest reads tools-manifest.json and flags MCP tool
+// descriptions that fall below the agent-grade bar. The manifest is
+// the source of truth for typed endpoint tools' descriptions; for
+// shell-out tools, descriptions come from the Cobra Short and the
+// auditCommandFields path covers them. Returns nil silently if the
+// manifest is missing (older CLIs predate it) or malformed.
+func auditMCPManifest(cliDir string) []ToolsAuditFinding {
+	path := filepath.Join(cliDir, manifestFile)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var m toolsManifest
+	if err := json.Unmarshal(data, &m); err != nil {
+		return nil
+	}
+	var findings []ToolsAuditFinding
+	for _, t := range m.Tools {
+		if t.Name == "" {
+			continue
+		}
+		switch {
+		case t.Description == "":
+			findings = append(findings, ToolsAuditFinding{
+				Kind: "empty-mcp-description", Command: t.Name,
+				File: manifestFile, Evidence: "(empty)",
+			})
+		case thinMCPDescription(t.Description):
+			findings = append(findings, ToolsAuditFinding{
+				Kind: "thin-mcp-description", Command: t.Name,
+				File: manifestFile, Evidence: t.Description,
+			})
+		}
+	}
+	return findings
+}
+
+// thinMCPDescription flags descriptions that are both short and
+// low-word-count — the "Create a tag" / "List items" shape that's
+// fine for OpenAPI documentation and inadequate for agents. Either
+// dimension alone is acceptable: a precise 50-char one-liner with 9
+// words can be agent-grade, and a 65-char description packed with
+// jargon may still be too thin in word count. Both signals firing is
+// the suspect pattern.
+func thinMCPDescription(s string) bool {
+	return len(s) < mcpDescMinLen && len(strings.Fields(s)) < mcpDescMinWords
 }
 
 type commandFields struct {
@@ -160,6 +282,7 @@ type commandFields struct {
 	short       string
 	hasReadOnly bool
 	hasEndpoint bool
+	hasRunE     bool // true when the literal declares Run or RunE; parent groupers omit both
 }
 
 func isCobraCommandType(expr ast.Expr) bool {
@@ -197,6 +320,8 @@ func extractCommandFields(lit *ast.CompositeLit) commandFields {
 			f.short = stringLit(kv.Value)
 		case "Annotations":
 			f.hasReadOnly, f.hasEndpoint = inspectAnnotations(kv.Value)
+		case "Run", "RunE":
+			f.hasRunE = true
 		}
 	}
 	return f
@@ -240,29 +365,59 @@ func auditCommandFields(file string, line int, f commandFields) []ToolsAuditFind
 	}
 	name := cmdName[0]
 
+	// The Cobra-side checks only apply to commands that actually become
+	// shell-out MCP tools at runtime. The cobratree walker skips:
+	//   - pp:endpoint commands (registered as typed tools with
+	//     spec-derived descriptions; the manifest audit covers those)
+	//   - parent groupers (no Run/RunE means not actionable)
+	//   - framework commands (auth, doctor, version, etc.) — including
+	//     their entire subtree. Generated CLIs put children (e.g.
+	//     `auth status`, `profile list`) in the same file as the parent,
+	//     so the file basename's leading token tells us the subtree
+	//     even when the child's own Use field doesn't match a framework
+	//     name.
+	// For all of these, the Cobra Short isn't the MCP tool description
+	// the agent will see, so flagging it would be noise.
+	isShellOut := !f.hasEndpoint && f.hasRunE && !frameworkCommands[name] && !inFrameworkSubtree(file)
+
 	var out []ToolsAuditFinding
-	switch {
-	case f.short == "":
-		out = append(out, ToolsAuditFinding{
-			Kind: "empty-short", Command: name, File: file, Line: line,
-			Evidence: "(empty)",
-		})
-	case suspiciousShort(f.short):
-		out = append(out, ToolsAuditFinding{
-			Kind: "thin-short", Command: name, File: file, Line: line,
-			Evidence: f.short,
-		})
+	if isShellOut {
+		switch {
+		case f.short == "":
+			out = append(out, ToolsAuditFinding{
+				Kind: "empty-short", Command: name, File: file, Line: line,
+				Evidence: "(empty)",
+			})
+		case suspiciousShort(f.short):
+			out = append(out, ToolsAuditFinding{
+				Kind: "thin-short", Command: name, File: file, Line: line,
+				Evidence: f.short,
+			})
+		}
 	}
-	// pp:endpoint commands are skipped by the runtime walker (they get
-	// typed-tool registration with method-derived classification), so
-	// the missing-read-only check doesn't apply to them.
-	if !f.hasEndpoint && !f.hasReadOnly && readShapedName(name) {
+	// missing-read-only applies only to commands that become shell-out
+	// MCP tools (typed endpoint tools get classification from the spec
+	// method; framework commands don't register at all).
+	if isShellOut && !f.hasReadOnly && readShapedName(name) {
 		out = append(out, ToolsAuditFinding{
 			Kind: "missing-read-only", Command: name, File: file, Line: line,
 			Evidence: "name matches read heuristic; no mcp:read-only annotation",
 		})
 	}
 	return out
+}
+
+// inFrameworkSubtree returns true when the file basename's leading
+// token (split on `_`) is a framework command. Generated CLIs follow
+// the convention <parent>.go or <parent>_<child>.go, so this catches
+// both the parent and its subtree without needing to track AddCommand
+// edges across files.
+func inFrameworkSubtree(file string) bool {
+	base := strings.TrimSuffix(file, ".go")
+	if i := strings.IndexByte(base, '_'); i > 0 {
+		base = base[:i]
+	}
+	return frameworkCommands[base]
 }
 
 // suspiciousShort flags Short text that's both short (under 30 chars)
