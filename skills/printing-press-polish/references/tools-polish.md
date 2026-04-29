@@ -261,13 +261,15 @@ The sync regenerates `tools-manifest.json` and `internal/mcp/tools.go` with the 
 
 ## Ledger and resumability
 
-`tools-audit` writes `<cli-dir>/.printing-press-tools-polish.json` after every run. It contains the timestamp, cli-dir, and one entry per finding.
+`tools-audit` writes `<cli-dir>/.printing-press-tools-polish.json` after every run. It contains the timestamp, cli-dir, one entry per finding, a `scorecard_before` snapshot captured on the first run, and an optional `progress` checkpoint.
 
 1. **Delta computation.** On a second run within 24 hours, the audit prints `since last run: N resolved, M new`. Stale ledgers (>24h) are deleted automatically.
-2. **Resumability.** If your context window flushes mid-polish, re-run `tools-audit <cli-dir>`. Findings you've fixed have disappeared from the new scan; findings you accepted are still recorded with status. You pick up where you left off.
-3. **Audit trail of accept decisions.** When you decide a finding is fine as-is, you mark the entry `accepted` and write a one-sentence rationale. The next run filters it out of the pending table.
+2. **Resumability.** If your context window flushes mid-polish, re-run `tools-audit <cli-dir>`. Findings you've fixed have disappeared from the new scan; findings you accepted are still recorded with status. The render's `next:` line at the bottom names the next finding you owe a decision on. Update `progress.last_processed_finding_id` to the finding key you've just decided so a future re-run resumes after it instead of re-scanning from the head.
+3. **Audit trail of accept decisions.** When you decide a finding is fine as-is, you mark the entry `accepted` with a rationale. For `thin-mcp-description` and `empty-mcp-description` you must also fill the three pre-decision fields (see below). The next run filters the accepted entry out of the pending table only when the gate fields are populated; otherwise the binary surfaces it as an incomplete accept.
 
 ### Marking a finding accepted
+
+#### Cobra-side findings (`empty-short`, `thin-short`, `missing-read-only`)
 
 When the table shows a finding that's actually fine, edit the ledger entry directly:
 
@@ -283,22 +285,67 @@ When the table shows a finding that's actually fine, edit the ledger entry direc
 }
 ```
 
-After marking, re-run `tools-audit <cli-dir>`. The pending table excludes the accepted entry; the header shows `(N accepted)` to confirm.
+The pending table excludes the accepted entry on the next run; the header shows `(N accepted)` to confirm.
 
-**Don't accept `empty-short`, `empty-mcp-description`, or `missing-read-only` findings.** They have no judgment call: empty descriptions always need text, and a read command always wants the annotation.
+**Don't accept `empty-short` or `missing-read-only`.** They have no judgment call: empty descriptions always need text, and a read command always wants the annotation.
 
-**Acceptance is rare for `thin-mcp-description`.** A typed endpoint tool whose description is so brief it tripped the heuristic almost certainly leaves the agent guessing. Accept only when the operation is genuinely trivial enough that more words don't help.
+#### MCP-description findings (`thin-mcp-description`, `empty-mcp-description`)
+
+These findings carry a stricter accept contract. The historical failure mode is bulk-accept: walking 200+ thin-description findings and stamping all of them with one rationale ("systemic to OpenAPI specs", "doesn't compound") instead of deliberating per item. The binary now refuses to count an accept as complete unless three pre-decision fields are populated:
+
+```json
+{
+  "kind": "thin-mcp-description",
+  "command": "tags_create",
+  "file": "tools-manifest.json",
+  "line": 0,
+  "evidence": "Create a new tag",
+  "status": "accepted",
+  "note": "Spec summary is the only source; an override would inflate every CLI without compounding",
+
+  "spec_source_material": "summary='Create a new tag'; one required body param 'name' (string); response is the tag object with id, name, slug",
+  "target_description": "Create a new tag in the workspace. Required: name. Returns the tag's id and slug. Tags must exist before they can be assigned to links.",
+  "gap_analysis": "Generator could compose target from the spec's request and response schemas; today it only emits the bare summary. Override is the right path until #384 lifts the baseline."
+}
+```
+
+Each field has a job:
+
+- **`spec_source_material`** — the honest answer to "what does the spec actually give us for this endpoint?" Quote from the source. Don't generalize ("specs are thin") — name the specific summary, parameters, request body, and response schema you read in `<cli-dir>/spec.json` or `spec.yaml`.
+- **`target_description`** — what a 10/10 description for this tool would say given the source material. Even when accepting the current state, naming the target makes the gap visible.
+- **`gap_analysis`** — why the generator can't produce `target_description` from `spec_source_material` today. This is the load-bearing field: it forces you to reason about whether the gap is genuinely systemic (file as a generator improvement, e.g., #384) or per-finding (write an override).
+
+If you can't fill all three honestly, you don't yet understand the finding well enough to accept it. Write the override instead, or do the spec reading required to fill the fields.
+
+**Forbidden accept patterns:**
+
+- "Systemic to OpenAPI specs", "doesn't compound", "out of scope for polish", or any rationale you'd stamp identically across many findings. The binary clusters accepts by normalized note text and refuses runs where any cluster exceeds 5 entries.
+- Accept-without-reading-spec. The pre-decision fields require the spec source material — guess and the gap analysis will read like generic prose.
+- Accept-and-move-on without writing the corresponding generator-improvement task. If you're filing the same `gap_analysis` repeatedly, that's evidence the generator should produce the target instead; surface it in the polish summary as a retro candidate.
+
+**Acceptance should be rare here.** The expected steady state is "fix it via override" or "fix it via generator improvement," not "accept it." See the override path under `thin-mcp-description` above.
 
 ### Don't manually mark findings as fixed
 
-If you fixed a finding via code change, do nothing in the ledger. The next audit re-scans the source and the manifest; finding gone → finding gone from the table → delta line shows `1 resolved`. Never set `status: "fixed"` by hand.
+If you fixed a finding via code change or override, do nothing in the ledger. The next audit re-scans the source and the manifest; finding gone → finding gone from the table → delta line shows `1 resolved`. Never set `status: "fixed"` by hand.
+
+### Completion gates the binary enforces
+
+The audit's "complete" signal is no longer just "zero pending." Four gates must pass:
+
+1. **Pre-decision fields gate.** Every accepted `thin-mcp-description` / `empty-mcp-description` entry has `spec_source_material`, `target_description`, and `gap_analysis` populated. Missing fields surface as `incomplete: N accepted finding(s) missing pre-decision fields` with each entry's `kind`/`command`/`file:line`.
+2. **Duplicate-rationale gate.** No more than 5 accepted findings share the same normalized `note` text. The audit clusters notes by lowercase + collapsed whitespace, so paraphrasing without changing meaning doesn't work — differentiate per item or rewrite both. Surfaces as `incomplete: N accepted finding(s) share rationale "..."`.
+3. **Scorecard-delta gate.** When `MCPDescriptionQuality` does not move from `scorecard_before` to current AND the run accepted any thin-mcp-description findings, the run is incomplete. Either the accepts were unwarranted (you owed an override that would have lifted the score) or the dimension is mis-scored (rare, surface to retro). Surfaces as `incomplete: MCPDescriptionQuality unchanged (X/10 → X/10) but N thin-mcp-description finding(s) accepted`.
+4. **Resume hint.** The render's `next:` line at the bottom names the first pending finding (status unset, or accepted-without-fields). Update `progress.last_processed_finding_id` after each decision so a re-run after compaction picks up where you left off.
+
+A run is complete only when the summary line reads `tools-audit: no pending findings (N accepted)` with no `incomplete:` block printed.
 
 ## Verification checklist
 
 After applying fixes, before declaring the polish complete:
 
 - [ ] `go build ./...` clean (annotations don't break compilation)
-- [ ] `printing-press tools-audit <cli-dir>` shows zero pending findings — every finding is either fixed (auto-removed) or explicitly accepted with a `note`
+- [ ] `printing-press tools-audit <cli-dir>` summary line reads `no pending findings`. No `incomplete:` block — every gate (pre-decision fields, duplicate rationale, scorecard delta) passes.
 - [ ] `printing-press dogfood --dir <cli-dir>` reports `MCP Surface: PASS`
 - [ ] If `mcp-descriptions.json` was edited, `printing-press mcp-sync <cli-dir>` was run to apply the overrides into `tools-manifest.json` and `internal/mcp/tools.go`. Re-run `tools-audit` after the sync to confirm thin-mcp-description findings disappeared.
 - [ ] If commands were renamed or had their annotations restructured, smoke-test the binary by inspecting `--help` output for the affected commands

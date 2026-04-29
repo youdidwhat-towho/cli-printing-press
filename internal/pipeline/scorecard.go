@@ -713,6 +713,14 @@ func IsThinMCPDescription(desc string) bool {
 // rather than to give partial credit to ones that haven't. CLIs whose
 // descriptions are 50%+ thin score 0 — there's no signal to credit
 // when most of the surface is unusable to an agent.
+// ScoreMCPDescriptionQuality is the exported entry point for the
+// MCP-description-quality score. The audit binary calls it to capture
+// before/after snapshots for the polish ledger's scorecard-delta gate;
+// the scorecard pipeline calls it through the unexported alias below.
+func ScoreMCPDescriptionQuality(dir string) (score int, scored bool) {
+	return scoreMCPDescriptionQuality(dir)
+}
+
 func scoreMCPDescriptionQuality(dir string) (score int, scored bool) {
 	m, err := ReadToolsManifest(dir)
 	if err != nil || len(m.Tools) == 0 {

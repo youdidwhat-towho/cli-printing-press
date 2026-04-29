@@ -372,8 +372,9 @@ Stop and:
 
 1. Run `printing-press tools-audit "$CLI_DIR" --json` to surface mechanical findings (empty Short, thin Short, missing `mcp:read-only` on read-shaped command names).
 2. You must read `references/tools-polish.md` and follow its instructions to address the findings AND run a judgment pass over every command — regardless of whether the audit flagged it. The audit catches mechanical issues; description quality and borderline classification (read-only vs. local-write) always require agent reasoning. You must not skip this.
+3. **Accepting MCP-description findings carries a stricter contract.** `thin-mcp-description` and `empty-mcp-description` accepts require three pre-decision fields (`spec_source_material`, `target_description`, `gap_analysis`) populated per finding. The binary rejects bulk accepts (>5 findings sharing one rationale) and runs that "complete" without lifting MCPDescriptionQuality. Fix via override or generator improvement is the expected path; accept is rare. See `references/tools-polish.md` "Marking a finding accepted" for the full contract.
 
-Proceed to "After all fixes" only when audit findings are resolved AND every command's description has been evaluated against the playbook's agent-grade criteria.
+Proceed to "After all fixes" only when the audit's summary line reads `no pending findings` with no `incomplete:` block — every gate (pre-decision fields, duplicate rationale, scorecard delta) passes.
 
 ### After all fixes
 

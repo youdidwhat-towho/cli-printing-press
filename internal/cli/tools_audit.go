@@ -23,6 +23,15 @@ const (
 	statusAccepted    = "accepted"
 	suspiciousMaxLen  = 30
 	suspiciousMinWord = 4
+
+	// duplicateRationaleThreshold caps how many accepted findings may
+	// share the same normalized note before the run is flagged as
+	// incomplete. The threshold is a hedge against bulk-accept patterns
+	// like "systemic to OpenAPI specs" applied to N findings without
+	// per-item deliberation. Five accepts with identical rationale is
+	// suspicious; ten is almost certainly a punt. See
+	// AGENTS.md "Deterministic Inventory + Agent-Marked Ledger".
+	duplicateRationaleThreshold = 5
 )
 
 // MCP description thresholds (pipeline.MCPDescMinLen, MCPDescMinWords,
@@ -91,10 +100,11 @@ Exit 0 regardless of findings (diagnostic, not gating).`,
 			previous := readPreviousLedger(cliDir)
 			delta := reconcileWithLedger(previous, findings)
 
-			if err := writeLedger(cliDir, findings); err != nil {
+			if err := writeLedger(cliDir, findings, previous); err != nil {
 				fmt.Fprintf(cmd.ErrOrStderr(), "warning: writing ledger %s: %v\n", filepath.Join(cliDir, ledgerFilename), err)
 			}
-			renderToolsAuditTable(cmd.OutOrStdout(), findings, delta)
+			completion := evaluateCompletion(cliDir, findings, previous)
+			renderToolsAuditTable(cmd.OutOrStdout(), findings, delta, completion)
 			return nil
 		},
 	}
@@ -128,6 +138,32 @@ type ToolsAuditFinding struct {
 	Evidence string `json:"evidence"`         // the offending text
 	Status   string `json:"status,omitempty"` // "" (== pending) or "accepted"; agent writes
 	Note     string `json:"note,omitempty"`   // agent-written rationale for an accept decision
+
+	// Pre-decision fields. Required when Status is "accepted" on
+	// findings where bulk-accept was the historical failure mode
+	// (thin-mcp-description, empty-mcp-description). The agent fills
+	// these BEFORE flipping Status, to force per-item deliberation
+	// instead of pattern-matching across many findings with one
+	// rationale. See requiresPreDecisionFields below for which kinds
+	// trigger the gate.
+	//
+	// SpecSourceMaterial: what the OpenAPI spec actually provides for
+	// this endpoint — summary, parameters[].description, requestBody
+	// $refs, responses $refs. The honest answer is "the spec only
+	// gives us a 6-word summary," not a generic "specs are thin."
+	//
+	// TargetDescription: what a 10/10 description for this tool would
+	// say given the source material. Even when accepting the current
+	// state, naming the target makes the gap visible.
+	//
+	// GapAnalysis: why the generator can't produce TargetDescription
+	// from SpecSourceMaterial today. This is the load-bearing field —
+	// it forces the agent to reason about whether the gap is genuinely
+	// systemic (generator improvement needed) or per-finding (override
+	// would close it).
+	SpecSourceMaterial string `json:"spec_source_material,omitempty"`
+	TargetDescription  string `json:"target_description,omitempty"`
+	GapAnalysis        string `json:"gap_analysis,omitempty"`
 }
 
 // readShapedNames is the heuristic for "this command name suggests a
@@ -405,7 +441,198 @@ func readShapedName(name string) bool {
 	return ok
 }
 
-func renderToolsAuditTable(w io.Writer, findings []ToolsAuditFinding, delta ledgerDelta) {
+// completionStatus captures the four gates that distinguish a complete
+// polish run from a run that "looks done" but skipped per-item
+// deliberation. Today's count-based "zero pending" is the baseline; the
+// gates are the load-bearing checks. See AGENTS.md "Deterministic
+// Inventory + Agent-Marked Ledger" for the rationale.
+type completionStatus struct {
+	IncompleteAccepts        []ToolsAuditFinding  // accepted but pre-decision fields missing
+	DuplicateRationaleGroups []rationaleGroup     // accepts that share a normalized note
+	ScorecardDeltaIssue      *scorecardDeltaIssue // accepted MCP-desc findings without score lift
+	NextPending              *ToolsAuditFinding   // resume hint
+}
+
+// rationaleGroup is one cluster of accepted findings whose normalized
+// notes match. The threshold is duplicateRationaleThreshold; groups
+// below it are not surfaced (the agent gets some natural overlap).
+type rationaleGroup struct {
+	Rationale string              // the normalized note text
+	Findings  []ToolsAuditFinding // accepted findings sharing this rationale
+}
+
+// scorecardDeltaIssue describes the scorecard-delta gate firing: the
+// run accepted N thin-mcp-description findings but MCPDescriptionQuality
+// did not improve. Either the accepts were unwarranted (the dimension
+// would have lifted with overrides) or the dimension is mis-scored.
+// Surface both numbers so the agent can debug.
+type scorecardDeltaIssue struct {
+	Before          int
+	After           int
+	AcceptedThinMCP int
+}
+
+// evaluateCompletion runs all four gates against the current findings
+// and returns the union of issues. An empty struct means the run is
+// complete by the load-bearing definition (zero pending + every gate
+// passes); any populated field means the run is incomplete with a
+// specific reason the render will surface.
+func evaluateCompletion(cliDir string, findings []ToolsAuditFinding, previous *ToolsAuditLedger) completionStatus {
+	var c completionStatus
+	for _, f := range findings {
+		if f.Status != statusAccepted {
+			continue
+		}
+		if requiresPreDecisionFields(f.Kind) && missingPreDecisionFields(f) {
+			c.IncompleteAccepts = append(c.IncompleteAccepts, f)
+		}
+	}
+	c.DuplicateRationaleGroups = detectDuplicateRationales(findings, duplicateRationaleThreshold)
+	c.ScorecardDeltaIssue = checkScorecardDelta(cliDir, findings, previous)
+	c.NextPending = nextPendingFinding(findings, previous)
+	return c
+}
+
+// requiresPreDecisionFields gates which finding kinds force the
+// SpecSourceMaterial/TargetDescription/GapAnalysis trio when accepted.
+// Today: only thin-mcp-description and empty-mcp-description, where
+// the cal-com test surfaced bulk-accept ("systemic to OpenAPI specs"
+// applied to 246 findings) as the failure mode. The Cobra-side kinds
+// (empty-short, thin-short, missing-read-only) have legitimate
+// uniform accept patterns (DO-NOT-EDIT generated files) that would be
+// noise to gate.
+func requiresPreDecisionFields(kind string) bool {
+	switch kind {
+	case "thin-mcp-description", "empty-mcp-description":
+		return true
+	}
+	return false
+}
+
+func missingPreDecisionFields(f ToolsAuditFinding) bool {
+	return strings.TrimSpace(f.SpecSourceMaterial) == "" ||
+		strings.TrimSpace(f.TargetDescription) == "" ||
+		strings.TrimSpace(f.GapAnalysis) == ""
+}
+
+// detectDuplicateRationales finds clusters of accepted findings whose
+// normalized notes match. Normalization is lowercase + collapsed
+// whitespace so "Systemic to OpenAPI specs" and "systemic  to openapi
+// specs" cluster. Groups under the threshold are dropped — some
+// natural overlap is fine; we're guarding against the punt pattern,
+// not against any duplication.
+func detectDuplicateRationales(findings []ToolsAuditFinding, threshold int) []rationaleGroup {
+	if threshold <= 0 {
+		return nil
+	}
+	clusters := make(map[string][]ToolsAuditFinding)
+	for _, f := range findings {
+		if f.Status != statusAccepted {
+			continue
+		}
+		key := normalizeRationale(f.Note)
+		if key == "" {
+			continue
+		}
+		clusters[key] = append(clusters[key], f)
+	}
+	var groups []rationaleGroup
+	for key, fs := range clusters {
+		if len(fs) > threshold {
+			groups = append(groups, rationaleGroup{Rationale: key, Findings: fs})
+		}
+	}
+	sort.Slice(groups, func(i, j int) bool {
+		return len(groups[i].Findings) > len(groups[j].Findings)
+	})
+	return groups
+}
+
+func normalizeRationale(s string) string {
+	return strings.ToLower(strings.Join(strings.Fields(s), " "))
+}
+
+// checkScorecardDelta compares ScorecardBefore (captured at run start)
+// against the current MCPDescriptionQuality score. Fires only when
+// there are accepted thin-mcp-description findings — accepting other
+// kinds doesn't entail score movement, so skipping the gate for those
+// avoids false positives.
+//
+// Returns nil when ScorecardBefore is absent (older ledger, or CLI
+// with no manifest) or when there are no accepted thin-mcp findings.
+// Both conditions mean the gate has nothing to enforce.
+func checkScorecardDelta(cliDir string, findings []ToolsAuditFinding, previous *ToolsAuditLedger) *scorecardDeltaIssue {
+	if previous == nil || previous.ScorecardBefore == nil {
+		return nil
+	}
+	var acceptedThinMCP int
+	for _, f := range findings {
+		if f.Status == statusAccepted && f.Kind == "thin-mcp-description" {
+			acceptedThinMCP++
+		}
+	}
+	if acceptedThinMCP == 0 {
+		return nil
+	}
+	current, scored := pipeline.ScoreMCPDescriptionQuality(cliDir)
+	if !scored {
+		return nil
+	}
+	if current > previous.ScorecardBefore.MCPDescriptionQuality {
+		return nil
+	}
+	return &scorecardDeltaIssue{
+		Before:          previous.ScorecardBefore.MCPDescriptionQuality,
+		After:           current,
+		AcceptedThinMCP: acceptedThinMCP,
+	}
+}
+
+// nextPendingFinding returns the resume hint: the first finding that
+// the agent still has to act on. "Pending" here means status is
+// unset, OR status is accepted but pre-decision fields are missing
+// (the entry was marked accepted prematurely). Returns nil when
+// nothing is pending — the run is at least count-complete.
+//
+// The previous ledger's Progress.LastProcessedFindingID is read as a
+// soft hint: when present, the search starts after that finding to
+// resume mid-walk. When absent or the referenced finding is gone, the
+// search starts from the head of the list.
+func nextPendingFinding(findings []ToolsAuditFinding, previous *ToolsAuditLedger) *ToolsAuditFinding {
+	startIdx := 0
+	if previous != nil && previous.Progress != nil && previous.Progress.LastProcessedFindingID != "" {
+		for i, f := range findings {
+			if findingKey(f) == previous.Progress.LastProcessedFindingID {
+				startIdx = i + 1
+				break
+			}
+		}
+	}
+	for i := startIdx; i < len(findings); i++ {
+		f := findings[i]
+		if f.Status != statusAccepted {
+			return &f
+		}
+		if requiresPreDecisionFields(f.Kind) && missingPreDecisionFields(f) {
+			return &f
+		}
+	}
+	// If the resume hint pointed past every remaining pending finding,
+	// fall back to a head-to-tail scan so we don't claim "complete"
+	// when there are pendings before the checkpoint.
+	for i := 0; i < startIdx && i < len(findings); i++ {
+		f := findings[i]
+		if f.Status != statusAccepted {
+			return &f
+		}
+		if requiresPreDecisionFields(f.Kind) && missingPreDecisionFields(f) {
+			return &f
+		}
+	}
+	return nil
+}
+
+func renderToolsAuditTable(w io.Writer, findings []ToolsAuditFinding, delta ledgerDelta, completion completionStatus) {
 	var pending, accepted int
 	for _, f := range findings {
 		if f.Status == statusAccepted {
@@ -414,41 +641,143 @@ func renderToolsAuditTable(w io.Writer, findings []ToolsAuditFinding, delta ledg
 			pending++
 		}
 	}
-	if pending == 0 {
+	gateFired := completion.hasGateFailure()
+
+	switch {
+	case pending == 0 && !gateFired:
 		if accepted > 0 {
 			fmt.Fprintf(w, "tools-audit: no pending findings (%d accepted)\n", accepted)
 		} else {
 			fmt.Fprintln(w, "tools-audit: no findings")
 		}
-		if delta.hasPrevious && len(delta.resolved) > 0 {
-			fmt.Fprintf(w, "since last run: %d resolved, 0 new\n", len(delta.resolved))
+	case pending == 0 && gateFired:
+		fmt.Fprintf(w, "tools-audit: incomplete (%d accepted, %d gate failure(s))\n", accepted, completion.gateFailureCount())
+	default:
+		fmt.Fprintf(w, "tools-audit: %d pending finding(s)", pending)
+		if accepted > 0 {
+			fmt.Fprintf(w, " (%d accepted)", accepted)
 		}
-		return
+		if gateFired {
+			fmt.Fprintf(w, ", %d gate failure(s)", completion.gateFailureCount())
+		}
+		fmt.Fprintln(w)
 	}
-	fmt.Fprintf(w, "tools-audit: %d pending finding(s)", pending)
-	if accepted > 0 {
-		fmt.Fprintf(w, " (%d accepted)", accepted)
-	}
-	fmt.Fprintln(w)
+
 	if delta.hasPrevious {
 		fmt.Fprintf(w, "since last run: %d resolved, %d new\n", len(delta.resolved), len(delta.added))
 	}
-	fmt.Fprintln(w)
-	fmt.Fprintf(w, "%-20s  %-15s  %-30s  %s\n", "KIND", "COMMAND", "FILE:LINE", "EVIDENCE")
-	for _, f := range findings {
-		if f.Status == statusAccepted {
-			continue
+
+	renderCompletionGates(w, completion)
+
+	if pending > 0 {
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "%-20s  %-15s  %-30s  %s\n", "KIND", "COMMAND", "FILE:LINE", "EVIDENCE")
+		for _, f := range findings {
+			if f.Status == statusAccepted {
+				continue
+			}
+			loc := fmt.Sprintf("%s:%d", f.File, f.Line)
+			fmt.Fprintf(w, "%-20s  %-15s  %-30s  %s\n", f.Kind, f.Command, loc, f.Evidence)
 		}
+	}
+
+	if completion.NextPending != nil {
+		f := completion.NextPending
 		loc := fmt.Sprintf("%s:%d", f.File, f.Line)
-		fmt.Fprintf(w, "%-20s  %-15s  %-30s  %s\n", f.Kind, f.Command, loc, f.Evidence)
+		fmt.Fprintln(w)
+		fmt.Fprintf(w, "next: %s on %s (%s)\n", f.Kind, f.Command, loc)
 	}
 }
 
+// hasGateFailure is true when any of the four gates surfaced an issue
+// the agent has to act on. Used to color the summary line.
+func (c completionStatus) hasGateFailure() bool {
+	return len(c.IncompleteAccepts) > 0 ||
+		len(c.DuplicateRationaleGroups) > 0 ||
+		c.ScorecardDeltaIssue != nil
+}
+
+func (c completionStatus) gateFailureCount() int {
+	n := 0
+	if len(c.IncompleteAccepts) > 0 {
+		n++
+	}
+	if len(c.DuplicateRationaleGroups) > 0 {
+		n++
+	}
+	if c.ScorecardDeltaIssue != nil {
+		n++
+	}
+	return n
+}
+
+// renderCompletionGates surfaces each fired gate with the specific
+// reason and the entries the agent should revisit. Silent when no
+// gate fired.
+func renderCompletionGates(w io.Writer, c completionStatus) {
+	if !c.hasGateFailure() {
+		return
+	}
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "incomplete: the run is not done yet")
+	if len(c.IncompleteAccepts) > 0 {
+		fmt.Fprintf(w, "  - %d accepted finding(s) missing pre-decision fields (spec_source_material, target_description, gap_analysis):\n", len(c.IncompleteAccepts))
+		for _, f := range c.IncompleteAccepts {
+			fmt.Fprintf(w, "      %s on %s (%s:%d)\n", f.Kind, f.Command, f.File, f.Line)
+		}
+	}
+	for _, g := range c.DuplicateRationaleGroups {
+		fmt.Fprintf(w, "  - %d accepted finding(s) share rationale %q — differentiate per item or rewrite:\n", len(g.Findings), truncateRationale(g.Rationale, 60))
+		for _, f := range g.Findings {
+			fmt.Fprintf(w, "      %s on %s (%s:%d)\n", f.Kind, f.Command, f.File, f.Line)
+		}
+	}
+	if d := c.ScorecardDeltaIssue; d != nil {
+		fmt.Fprintf(w, "  - MCPDescriptionQuality unchanged (%d/10 → %d/10) but %d thin-mcp-description finding(s) accepted; either write overrides or accepts are unwarranted\n", d.Before, d.After, d.AcceptedThinMCP)
+	}
+}
+
+func truncateRationale(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return s[:max-1] + "…"
+}
+
 // ToolsAuditLedger is the on-disk snapshot of the last audit run.
+//
+// ScorecardBefore is captured on the first audit run that finds no
+// existing ledger and preserved across subsequent runs. It anchors the
+// scorecard-delta gate: a polish run that "completes" with accepted
+// thin-mcp-description findings but no movement in
+// MCPDescriptionQuality is incomplete by definition.
+//
+// Progress is an optional checkpoint the polish skill writes after
+// deliberating on each finding. A re-invocation after a context flush
+// reads it to resume mid-walk. When absent, the resume hint is the
+// first pending finding in scan order.
 type ToolsAuditLedger struct {
-	Timestamp time.Time           `json:"timestamp"`
-	CLIDir    string              `json:"cli_dir"`
-	Findings  []ToolsAuditFinding `json:"findings"`
+	Timestamp       time.Time           `json:"timestamp"`
+	CLIDir          string              `json:"cli_dir"`
+	Findings        []ToolsAuditFinding `json:"findings"`
+	ScorecardBefore *ScorecardSnapshot  `json:"scorecard_before,omitempty"`
+	Progress        *PolishProgress     `json:"progress,omitempty"`
+}
+
+// ScorecardSnapshot captures the dimensions the polish ledger gates on.
+// Today only MCPDescriptionQuality is read; the snapshot is structured
+// to absorb additional dimensions if future polish gates need them
+// without breaking ledger compatibility.
+type ScorecardSnapshot struct {
+	MCPDescriptionQuality int       `json:"mcp_description_quality"`
+	Captured              time.Time `json:"captured"`
+}
+
+// PolishProgress is the agent-written checkpoint for resume after
+// context loss. The binary derives a fallback resume hint from the
+// finding list when this is absent, so the field is optional.
+type PolishProgress struct {
+	LastProcessedFindingID string `json:"last_processed_finding_id,omitempty"`
 }
 
 type ledgerDelta struct {
@@ -481,11 +810,23 @@ func readPreviousLedger(cliDir string) *ToolsAuditLedger {
 	return &l
 }
 
-func writeLedger(cliDir string, findings []ToolsAuditFinding) error {
+func writeLedger(cliDir string, findings []ToolsAuditFinding, previous *ToolsAuditLedger) error {
 	ledger := ToolsAuditLedger{
 		Timestamp: time.Now().UTC(),
 		CLIDir:    cliDir,
 		Findings:  findings,
+	}
+	// ScorecardBefore is sticky: captured on the first run that has no
+	// existing ledger, preserved on every subsequent run. The snapshot
+	// is the anchor for the scorecard-delta gate, so re-running the
+	// audit must not silently rebase the baseline mid-polish.
+	if previous != nil && previous.ScorecardBefore != nil {
+		ledger.ScorecardBefore = previous.ScorecardBefore
+	} else {
+		ledger.ScorecardBefore = captureScorecardSnapshot(cliDir)
+	}
+	if previous != nil && previous.Progress != nil {
+		ledger.Progress = previous.Progress
 	}
 	data, err := json.MarshalIndent(ledger, "", "  ")
 	if err != nil {
@@ -493,6 +834,21 @@ func writeLedger(cliDir string, findings []ToolsAuditFinding) error {
 	}
 	data = append(data, '\n')
 	return os.WriteFile(filepath.Join(cliDir, ledgerFilename), data, 0644)
+}
+
+// captureScorecardSnapshot reads the dimensions the ledger gates on.
+// Returns nil when no dimension can be scored (e.g., no
+// tools-manifest.json) so the gate has nothing to enforce; that's the
+// honest answer for CLIs that predate the manifest, not a silent zero.
+func captureScorecardSnapshot(cliDir string) *ScorecardSnapshot {
+	score, scored := pipeline.ScoreMCPDescriptionQuality(cliDir)
+	if !scored {
+		return nil
+	}
+	return &ScorecardSnapshot{
+		MCPDescriptionQuality: score,
+		Captured:              time.Now().UTC(),
+	}
 }
 
 // reconcileWithLedger carries Status/Note from the previous ledger
@@ -516,6 +872,9 @@ func reconcileWithLedger(previous *ToolsAuditLedger, current []ToolsAuditFinding
 		if old, ok := prev[k]; ok {
 			current[i].Status = old.Status
 			current[i].Note = old.Note
+			current[i].SpecSourceMaterial = old.SpecSourceMaterial
+			current[i].TargetDescription = old.TargetDescription
+			current[i].GapAnalysis = old.GapAnalysis
 		} else {
 			delta.added = append(delta.added, current[i])
 		}
