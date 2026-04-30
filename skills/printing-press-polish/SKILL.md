@@ -48,6 +48,8 @@ PRESS_HOME="$HOME/printing-press"
 PRESS_LIBRARY="$PRESS_HOME/library"
 ```
 
+**`AskUserQuestion` is a deferred tool.** Before the first use in this session, load its schema with `ToolSearch select:AskUserQuestion`. Without that load step the tool's schema isn't visible in the tool list and it appears unavailable — do not fall back to plain-text "reply 1 or 2" prompts when running in a forked context. Plain-text replies land in the parent session, never reach this fork, and the workflow stalls. Load AskUserQuestion eagerly during Setup so every later prompt site (resolve CLI, divergence check, publish offer) just works.
+
 ### Public-library hint
 
 If the user's request includes phrasing like "polish notion **in the
