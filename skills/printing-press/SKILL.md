@@ -189,6 +189,8 @@ if [ -f "$PRESS_VERCHECK_FILE" ] && [ -z "$PRESS_VERCHECK_FORCE" ]; then
 fi
 
 if [ "$_press_repo" = "true" ]; then
+  # Repo mode checks origin/main every run because the checkout and local build
+  # move quickly; skipped_repo_main suppresses repeated prompts for one SHA.
   if git -C "$_scope_dir" remote get-url origin >/dev/null 2>&1 &&
      git -C "$_scope_dir" fetch --quiet origin main >/dev/null 2>&1; then
     _head_rev=$(git -C "$_scope_dir" rev-parse HEAD 2>/dev/null || true)
@@ -231,6 +233,9 @@ elif [ "$_should_check" = "true" ] && command -v go >/dev/null 2>&1; then
      awk -v installed="$_installed" -v latest="$_latest" 'BEGIN {
        split(installed, a, ".")
        split(latest, b, ".")
+       # Integer truncation means pre-release suffixes (e.g. "4.0.0-rc.1") are
+       # treated as equal to their GA counterpart. Acceptable while we do not
+       # ship pre-release tags; revisit if that changes.
        for (i = 1; i <= 3; i++) {
          if ((a[i] + 0) < (b[i] + 0)) exit 0
          if ((a[i] + 0) > (b[i] + 0)) exit 1
@@ -282,7 +287,7 @@ CODEX_CONSECUTIVE_FAILURES=0
 ```
 <!-- PRESS_SETUP_CONTRACT_END -->
 
-**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles four signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade), and the min-binary-version compatibility check. Skipping the reference will cause the skill to proceed with a missing or out-of-date binary. Do not skip.
+**MANDATORY: Read and apply [references/setup-checks.md](references/setup-checks.md) immediately after the setup contract bash block runs, before any other action.** It handles four signals the contract emits to stdout: `[setup-error]` (refuse to run, surface the install instructions), `[repo-upgrade-available]` (interactive `AskUserQuestion` prompt + optional repo pull), the min-binary-version compatibility check (hard stop if binary is too old), and `[upgrade-available]` (interactive `AskUserQuestion` prompt + optional standalone binary upgrade). Skipping the reference will cause the skill to proceed with a missing or out-of-date binary. Do not skip.
 
 Only after preflight completes successfully (no `[setup-error]`; any `[repo-upgrade-available]` or `[upgrade-available]` was offered to the user) should you proceed to the Orientation & Briefing section below.
 
