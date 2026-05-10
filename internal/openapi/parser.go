@@ -2864,9 +2864,6 @@ func resolveIDFieldFromResourceNamePrefix(itemSchema *openapi3.Schema, resourceN
 		return ""
 	}
 	base := strings.ReplaceAll(strings.ToLower(resourceName), "-", "_")
-	if base == "" {
-		return ""
-	}
 	singular := strings.ReplaceAll(strings.ToLower(spec.Singularize(resourceName)), "-", "_")
 
 	seen := map[string]bool{}
