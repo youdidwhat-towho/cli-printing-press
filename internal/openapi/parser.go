@@ -2864,7 +2864,7 @@ func resolveIDFieldFromResourceNamePrefix(itemSchema *openapi3.Schema, resourceN
 		return ""
 	}
 	base := strings.ReplaceAll(strings.ToLower(resourceName), "-", "_")
-	singular := strings.ReplaceAll(strings.ToLower(spec.Singularize(resourceName)), "-", "_")
+	singular := strings.ReplaceAll(strings.ToLower(singularizeKebab(resourceName)), "-", "_")
 
 	seen := map[string]bool{}
 	candidates := make([]string, 0, 6)
@@ -2889,6 +2889,21 @@ func resolveIDFieldFromResourceNamePrefix(itemSchema *openapi3.Schema, resourceN
 		}
 	}
 	return ""
+}
+
+// singularizeKebab applies spec.Singularize to the last segment of a kebab
+// identifier and rejoins. spec.Singularize's irregulars table only matches
+// bare lowercase words, so feeding it a compound name like "pod-analyses"
+// would skip the irregular ("analyses" -> "analysis") and produce
+// "pod-analyse" via the suffix-strip path. Splitting first preserves the
+// irregular handling on the entity word at the tail of the path.
+func singularizeKebab(s string) string {
+	if !strings.Contains(s, "-") {
+		return spec.Singularize(s)
+	}
+	parts := strings.Split(s, "-")
+	parts[len(parts)-1] = spec.Singularize(parts[len(parts)-1])
+	return strings.Join(parts, "-")
 }
 
 // unwrapItemSchema returns the schema of items inside a list response. Handles

@@ -3629,6 +3629,20 @@ func TestParseIDFieldResourcePrefixHeuristic(t *testing.T) {
 `,
 			wantID: "",
 		},
+		{
+			// pod-analyses -> "pod-analysis" via per-segment singularize, then
+			// snake-case probe lookup -> pod_analysis_id. Without per-segment
+			// handling, spec.Singularize("pod-analyses") would fall through to
+			// the "ses" suffix rule and produce "pod-analyse" instead.
+			name: "compound kebab path with irregular plural tail singularizes per segment",
+			path: "/pod-analyses",
+			schemaYAML: `                  type: object
+                  properties:
+                    pod_analysis_id: {type: string}
+                    summary: {type: string}
+`,
+			wantID: "pod_analysis_id",
+		},
 	}
 
 	for _, tt := range tests {
