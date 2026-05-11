@@ -4499,6 +4499,58 @@ func TestGeneratedOutput_ResourceParentsNotHiddenWithoutAPIBrowser(t *testing.T)
 		"raw resource parent must not be Hidden when no api browser is generated")
 }
 
+func TestGeneratedOutput_AgentContextIncludesHiddenResourceGroups(t *testing.T) {
+	t.Parallel()
+
+	// Cobra's Hidden flag is a --help curation tool; the agent-context surface
+	// must still enumerate hidden resource parents and their endpoint subcommands
+	// so agents can reach every action a CLI user could.
+	apiSpec := &spec.APISpec{
+		Name:    "agentctxhide",
+		Version: "0.1.0",
+		BaseURL: "https://api.example.com",
+		Auth:    spec.AuthConfig{Type: "api_key", Header: "X-Api-Key", EnvVars: []string{"AC_API_KEY"}},
+		Config:  spec.ConfigSpec{Format: "toml", Path: "~/.config/agentctxhide-pp-cli/config.toml"},
+		Resources: map[string]spec.Resource{
+			"orders": {
+				Description: "Manage orders",
+				Endpoints: map[string]spec.Endpoint{
+					"list":   {Method: "GET", Path: "/orders", Description: "List orders"},
+					"create": {Method: "POST", Path: "/orders", Description: "Create order"},
+				},
+			},
+			"customers": {
+				Description: "Single-endpoint customers resource (gets promoted)",
+				Endpoints: map[string]spec.Endpoint{
+					"list": {Method: "GET", Path: "/customers", Description: "List customers"},
+				},
+			},
+		},
+	}
+
+	outputDir := filepath.Join(t.TempDir(), "agentctxhide-pp-cli")
+	gen := New(apiSpec, outputDir)
+	require.NoError(t, gen.Generate())
+
+	runGoCommand(t, outputDir, "mod", "tidy")
+	binaryPath := filepath.Join(outputDir, "agentctxhide-pp-cli")
+	runGoCommand(t, outputDir, "build", "-o", binaryPath, "./cmd/agentctxhide-pp-cli")
+
+	out, err := exec.Command(binaryPath, "agent-context").Output()
+	require.NoError(t, err)
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal(out, &payload))
+
+	orders := findAgentContextCommand(payload["commands"], func(c map[string]any) bool {
+		return c["name"] == "orders"
+	})
+	require.NotNil(t, orders, "hidden resource parent must appear in agent-context")
+	subs, ok := orders["subcommands"].([]any)
+	require.True(t, ok, "hidden resource parent must report its endpoint subcommands")
+	assert.NotEmpty(t, subs, "hidden resource parent must report its endpoint subcommands")
+}
+
 func TestGeneratedOutput_PromotedCommandNotForBuiltins(t *testing.T) {
 	t.Parallel()
 
