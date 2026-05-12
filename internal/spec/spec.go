@@ -1184,6 +1184,7 @@ func (h *HTMLExtract) EffectiveScriptSelector() string {
 type Param struct {
 	Name        string   `yaml:"name" json:"name"`
 	FlagName    string   `yaml:"flag_name,omitempty" json:"flag_name,omitempty"`
+	URLName     string   `yaml:"url_name,omitempty" json:"url_name,omitempty"` // optional override for URL query-key emission (e.g., "$limit" for Socrata while keeping --limit flag)
 	Aliases     []string `yaml:"aliases,omitempty" json:"aliases,omitempty"`
 	Type        string   `yaml:"type" json:"type"`
 	Required    bool     `yaml:"required" json:"required"`
@@ -1207,6 +1208,18 @@ type Param struct {
 	// It lets validation distinguish an omitted public name from invalid
 	// `flag_name: ""` while still allowing overlays to clear FlagName.
 	FlagNameSet bool `yaml:"-" json:"-"`
+}
+
+// WireName returns the URL query-key name for this param when emitted in a
+// generated HTTP request. URLName takes precedence when set (e.g., "$limit" for
+// Socrata-style APIs that require the literal "$" prefix on pagination + SoQL
+// params); otherwise Name is used. The CLI flag name is independent (derived
+// from FlagName or paramIdent), so this only affects what shows up in the URL.
+func (p Param) WireName() string {
+	if p.URLName != "" {
+		return p.URLName
+	}
+	return p.Name
 }
 
 func (p Param) PublicInputName() string {

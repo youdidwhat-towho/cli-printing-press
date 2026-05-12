@@ -248,6 +248,7 @@ func New(s *spec.APISpec, outputDir string) *Generator {
 		"mcpParamDesc":           g.mcpParamDescription,
 		"flagName":               flagName,
 		"paramIdent":             paramIdent,
+		"paramWireName":          paramWireName,
 		"typeFieldIdent":         typeFieldIdent,
 		"safeTypeName":           safeTypeName,
 		"hasNonScalarType": func(types map[string]spec.TypeDef) bool {
