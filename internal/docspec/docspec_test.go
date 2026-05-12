@@ -88,8 +88,13 @@ func TestDetectAuth(t *testing.T) {
 }
 
 func TestDetectBaseURL(t *testing.T) {
-	assert.Equal(t, "https://api.stripe.com", detectBaseURL("Base URL: https://api.stripe.com/v1"))
-	assert.Equal(t, "https://api.example.com", detectBaseURL("No URL here"))
+	url, isPlaceholder := detectBaseURL("Base URL: https://api.stripe.com/v1")
+	assert.Equal(t, "https://api.stripe.com", url)
+	assert.False(t, isPlaceholder)
+
+	url, isPlaceholder = detectBaseURL("No URL here")
+	assert.Equal(t, "https://api.example.com", url)
+	assert.True(t, isPlaceholder, "missing URL must signal placeholder fallback")
 }
 
 func TestFirstSegment(t *testing.T) {
