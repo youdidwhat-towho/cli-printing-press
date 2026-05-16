@@ -38,12 +38,19 @@ on:
         required: true
 
 permissions:
-  checks: write
   contents: read
   pull-requests: read
 
 jobs:
   evaluate:
+    # GitHub Actions auto-creates a check_run with this exact name when
+    # the job runs, and its conclusion mirrors the job's exit status.
+    # We rely on that auto-created check_run rather than POSTing our
+    # own because as of Feb 2025 the GitHub Actions runtime rejects
+    # external workflow attempts to update check_run status/conclusion
+    # via GITHUB_TOKEN (HTTP 403). The job exits non-zero when threads
+    # are unresolved, the auto check_run goes red, the merge widget
+    # shows the failure — no API calls, no duplicates, no PATCH races.
     name: All conversations resolved
     # Skip drafts across every event source. The original guard only
     # covered pull_request_target, but pull_request_review and
@@ -88,11 +95,26 @@ jobs:
         env:
           PR_NUMBER: ${{ steps.pr.outputs.number }}
           HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
         run: |
           set -euo pipefail
 
           owner="${GITHUB_REPOSITORY%/*}"
           repo="${GITHUB_REPOSITORY#*/}"
+
+          # synchronize fires the moment a push lands, but GitHub marks
+          # threads outdated/resolved asynchronously based on the new
+          # file content. Querying immediately races that resolution and
+          # can report a stale "1 unresolved" for a thread that is about
+          # to flip resolved a second later (printing-press-library #587
+          # hit this). Short settle delay lets the auto-resolution land.
+          # Scoped to synchronize only — opened, reopened, ready_for_review
+          # don't move the commit pointer so they can't have new
+          # auto-resolutions in flight (greptile P2 on #623).
+          if [ "${EVENT_NAME}" = "pull_request_target" ] && [ "${EVENT_ACTION}" = "synchronize" ]; then
+            sleep 8
+          fi
 
           threads_json="$(mktemp)"
           gh api graphql --paginate \
@@ -126,45 +148,42 @@ jobs:
           echo "total=${total} unresolved=${unresolved} (active=${unresolved_active} outdated=${unresolved_outdated})"
 
           if [ "${unresolved}" -eq 0 ]; then
-            conclusion="success"
-            title="All ${total} conversation(s) resolved"
-            summary=$'No unresolved review threads on this PR.'
-          else
-            conclusion="failure"
-            if [ "${unresolved_active}" -gt 0 ] && [ "${unresolved_outdated}" -gt 0 ]; then
-              title="${unresolved} unresolved (${unresolved_active} on current code, ${unresolved_outdated} outdated)"
-            elif [ "${unresolved_active}" -gt 0 ]; then
-              title="${unresolved} unresolved conversation(s)"
-            else
-              title="${unresolved} unresolved on outdated lines (likely addressed)"
-            fi
-
-            summary=$(jq -r '
-              def listing:
-                [.[] | select(.isResolved == false)] as $u |
-                ($u | length) as $count |
-                "**" + ($count|tostring) + " unresolved review thread(s):**\n\n" +
-                ([$u[0:10] | .[] |
-                  "- `" + .path + (if .line then ":" + (.line | tostring) else "" end) + "` by `" +
-                  (.comments.nodes[0].author.login // "unknown") + "`" +
-                  (if .isOutdated then " *(outdated — line no longer exists; likely addressed by a later commit)*" else "" end)
-                ] | join("\n")) +
-                (if $count > 10 then "\n\n_… and " + ($count - 10 | tostring) + " more._" else "" end) +
-                "\n\n---\n\n**To unblock the merge**, click \"Resolve conversation\" on each unresolved thread in the GitHub UI. Per repo convention every Greptile finding should be resolved (in code, or with a concrete reply explaining the deferral) before merge."
-              ;
-              listing
-            ' "${threads_json}")
+            printf '## All %s conversation(s) resolved\n\nNo unresolved review threads on this PR.\n' \
+              "${total}" >> "${GITHUB_STEP_SUMMARY}"
+            echo "PASS: 0 unresolved threads on ${HEAD_SHA}"
+            exit 0
           fi
 
-          payload="$(mktemp)"
-          jq -n \
-            --arg name "All conversations resolved" \
-            --arg head_sha "${HEAD_SHA}" \
-            --arg conclusion "${conclusion}" \
-            --arg title "${title}" \
-            --arg summary "${summary}" \
-            '{name: $name, head_sha: $head_sha, status: "completed", conclusion: $conclusion, output: {title: $title, summary: $summary}}' \
-            > "${payload}"
+          # Build the detailed thread listing once, reused for the step
+          # summary (rendered on the workflow run page) and the
+          # ::error:: annotation (rendered in the check_run UI).
+          listing="$(jq -r '
+            [.[] | select(.isResolved == false)] as $u |
+            ($u | length) as $count |
+            ([$u[0:10] | .[] |
+              "- `" + .path + (if .line then ":" + (.line | tostring) else "" end) + "` by `" +
+              (.comments.nodes[0].author.login // "unknown") + "`" +
+              (if .isOutdated then " *(outdated — line no longer exists; likely addressed by a later commit)*" else "" end)
+            ] | join("\n")) +
+            (if $count > 10 then "\n\n_… and " + ($count - 10 | tostring) + " more._" else "" end)
+          ' "${threads_json}")"
 
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/check-runs" --input "${payload}" >/dev/null
-          echo "Posted check_run: ${title} (${conclusion}) on ${HEAD_SHA}"
+          if [ "${unresolved_active}" -gt 0 ] && [ "${unresolved_outdated}" -gt 0 ]; then
+            heading="${unresolved} unresolved (${unresolved_active} on current code, ${unresolved_outdated} outdated)"
+          elif [ "${unresolved_active}" -gt 0 ]; then
+            heading="${unresolved} unresolved conversation(s)"
+          else
+            heading="${unresolved} unresolved on outdated lines (likely addressed)"
+          fi
+
+          {
+            printf '## %s\n\n%s\n\n---\n\n' "${heading}" "${listing}"
+            printf '**To unblock the merge**, click "Resolve conversation" on each unresolved thread in the GitHub UI. Per repo convention every Greptile finding should be resolved (in code, or with a concrete reply explaining the deferral) before merge.\n'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+          # ::error:: annotation surfaces in the check_run UI without
+          # needing a POST. The job's non-zero exit drives the auto
+          # check_run's conclusion to failure, which is what the merge
+          # widget displays.
+          echo "::error::${heading} on PR #${PR_NUMBER}. See the workflow run summary for the list. Click \"Resolve conversation\" on each thread to unblock."
+          exit 1
