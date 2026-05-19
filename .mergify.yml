@@ -14,9 +14,10 @@ queue_rules:
     #     silent-skips bot branches by design (Mergify confirmed this is
     #     expected), so requiring it here would block every queued PR.
     #
-    # merge_protections (further down) re-enforces Greptile + review-
-    # threads against the source PR before the GitHub merge actually
-    # happens, so the human-review gate isn't bypassed by speculation.
+    # merge_protections (further down) applies to both source PRs and the
+    # speculative draft PRs Mergify opens. Keep Greptile enforced on source
+    # PRs, but let queue draft branches rely on the CI-only merge_conditions
+    # below because Greptile intentionally skips those bot branches.
     queue_conditions:
       - base = main
       # All Greptile/human inline review threads must be resolved before
@@ -107,6 +108,10 @@ merge_protections:
       - check-success = pr-title
       - check-success = test
       - or:
+        # Mergify evaluates merge protections on its speculative draft PRs too.
+        # Greptile intentionally skips `mergify/merge-queue/*` branches, and
+        # source PRs already had to pass Greptile in queue_conditions.
+        - head ~= ^mergify/merge-queue/
         - check-success = Greptile Review
         - check-neutral = Greptile Review
         - check-skipped = Greptile Review
