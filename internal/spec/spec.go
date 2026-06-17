@@ -1168,6 +1168,16 @@ func (p Param) PublicInputName() string {
 	if p.IdentName != "" {
 		return publicInputNameFromIdent(p.IdentName)
 	}
+	// Last-resort fallback is the raw wire name, which can contain characters
+	// (e.g. the "[]" in "assignees[]") that are illegal in an MCP tool input
+	// schema property key. A single such key makes the Anthropic Messages API
+	// reject EVERY request in a session that loads the tool — an unrecoverable
+	// poison-tool lockout. Strip illegal characters so the public name (= the
+	// MCP property key AND the CLI flag) is always safe; the binding still
+	// carries p.Name as WireName, so the actual API request is unchanged.
+	if s := sanitizeMCPPropertyKey(p.Name); s != "" {
+		return s
+	}
 	return p.Name
 }
 
@@ -1846,6 +1856,36 @@ func (s *APISpec) NormalizeAuthEnvVarSpecs() {
 
 var publicParamNameRe = regexp.MustCompile(`^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$`)
 
+// mcpPropertyKeyRe is the property-key pattern the Anthropic Messages API
+// enforces on every tool input schema. One tool whose schema violates it makes
+// the API reject EVERY request in any session that loads the tool (a
+// poison-tool lockout — the session cannot even self-/tldr). Any name that
+// becomes an MCP tool property key (i.e. a CLI public flag name) must satisfy
+// this; it is broader than publicParamNameRe because it also permits "_" and
+// "." that some authored flag names use.
+var mcpPropertyKeyRe = regexp.MustCompile(`^[a-zA-Z0-9_.-]{1,64}$`)
+
+// sanitizeMCPPropertyKey removes characters illegal in an MCP tool property
+// key from a raw wire name and caps length at 64, so a param with no authored
+// flag_name still yields a lockout-safe public name. It strips anything
+// outside [A-Za-z0-9_.-] (e.g. the "[]" in "assignees[]" -> "assignees").
+// Returns "" only when nothing usable remains, leaving the caller to keep the
+// raw name (which the generation-time guard below then rejects loudly).
+func sanitizeMCPPropertyKey(name string) string {
+	var b strings.Builder
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9',
+			r == '_', r == '.', r == '-':
+			b.WriteRune(r)
+		}
+		if b.Len() >= 64 {
+			break
+		}
+	}
+	return b.String()
+}
+
 func validateEndpointPublicParamNames(endpoint Endpoint) error {
 	if err := validatePublicParamNameList("params", endpoint.Params); err != nil {
 		return err
@@ -1871,6 +1911,14 @@ func validatePublicParamNameList(context string, params []Param) error {
 				return fmt.Errorf("%s: flag_name %q collides with %s", label, p.FlagName, previous)
 			}
 			seen[p.FlagName] = label + " flag_name"
+		}
+		// Guard the actual key that will be emitted as the MCP tool property
+		// key (= CLI public flag). PublicInputName() sanitizes the raw-wire
+		// fallback, so this only fires when even sanitization cannot produce a
+		// valid key — fail loud at generation time with an actionable message
+		// instead of shipping a tool that triggers a poison-tool lockout.
+		if key := p.PublicInputName(); !mcpPropertyKeyRe.MatchString(key) {
+			return fmt.Errorf("%s: derived MCP property key %q is invalid (must match %s) — set an explicit flag_name", label, key, mcpPropertyKeyRe.String())
 		}
 		publicName := p.FlagName
 		if publicName == "" && publicParamNameRe.MatchString(p.Name) {
